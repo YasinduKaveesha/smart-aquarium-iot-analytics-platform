@@ -1,38 +1,44 @@
-# Smart Aquarium IoT Analytics Platform
+# Smart Aquarium Adaptive IoT Analytics Platform
 
-An **end-to-end IoT monitoring and analytics platform** that continuously tracks aquarium water conditions and generates intelligent maintenance recommendations using real-time sensor data and machine learning.
+An **adaptive AI-driven IoT monitoring and decision-support platform** that continuously tracks aquarium water conditions and generates intelligent maintenance recommendations using real-time sensor data, statistical monitoring, and machine learning.
 
-This project demonstrates a **complete IoT data pipeline**, including embedded sensor integration, MQTT communication, backend data ingestion, NoSQL storage, machine learning analytics, and a web-based dashboard for real-time monitoring.
+This project demonstrates a **complete IoT data pipeline**, including embedded sensor integration, MQTT communication, backend data ingestion, NoSQL storage, preprocessing pipelines, machine learning analytics, and a web-based dashboard for real-time monitoring.
+
+The system evolves over time using **human-in-the-loop feedback, concept drift monitoring, and batch recalibration**, allowing the analytics models to adapt to the specific behavior of a real aquarium.
 
 ---
 
 ## 📋 Overview
 
-Maintaining stable water quality is critical for aquarium ecosystems. Manual monitoring is inconsistent and often fails to detect gradual changes that can stress or harm fish.
+Maintaining stable water quality is critical for aquarium ecosystems. Manual monitoring is inconsistent and often fails to detect gradual environmental changes that can stress or harm fish.
 
-This system automates the monitoring process by:
+This system automates monitoring and provides **intelligent decision support** by:
 
-- **Continuously collecting** water quality data.
-- **Analyzing sensor patterns** using machine learning.
+- **Continuously collecting** water quality telemetry from IoT sensors.
+- **Cleaning and preprocessing** noisy sensor data streams.
+- **Computing a Water Quality Index (WQI)** for simplified health monitoring.
+- **Detecting anomalies** using machine learning.
 - **Forecasting potential issues** before they occur.
-- **Providing clear recommendations** via an intuitive dashboard.
+- **Providing actionable maintenance recommendations** through a dashboard.
 
-The platform converts multiple sensor readings into a **Water Quality Index (WQI)** and combines it with anomaly detection and forecasting models to determine overall aquarium health.
+The platform converts multiple sensor readings into a **single interpretable health score** and combines this with anomaly detection and forecasting models to determine overall aquarium stability.
 
 ---
 
 ## 🏗️ System Architecture
 
-The platform follows a layered IoT architecture designed for modularity, scalability, and reliability.
+The platform follows a **layered IoT + AI architecture** designed for modularity, scalability, and reliability.
 
 ```mermaid
 graph TD
     A[Sensors: pH, Temp, TDS, Turbidity] --> B[ESP32 Microcontroller]
-    B -- "MQTT (Telemetry Data)" --> C[Backend Ingestion Service]
-    C --> D[(MongoDB Time-Series DB)]
-    D --> E[Analytics Engine: WQI + ML Models]
-    E --> F[React Web Dashboard]
-    F --> G[Predictive Maintenance Alerts]
+    B -- "MQTT Telemetry Data" --> C[Backend Ingestion Service]
+    C --> D[(MongoDB Time-Series Database)]
+    D --> E[Preprocessing Pipeline]
+    E --> F[Analytics Engine: WQI + ML Models]
+    F --> G[React Web Dashboard]
+    G --> H[User Feedback Interface]
+    H --> I[Drift Monitoring + Retraining Pipeline]
 ```
 
 ---
@@ -40,22 +46,35 @@ graph TD
 ## 🛠️ Technology Stack
 
 ### Hardware
-- **ESP32 Microcontroller**: Central processing unit with integrated Wi-Fi.
-- **Sensors**: pH, DS18B20 Temperature, TDS (Total Dissolved Solids), and Turbidity.
+
+- **ESP32 Microcontroller** – Wi-Fi enabled microcontroller for sensor integration
+- **Sensors**
+  - pH Sensor
+  - DS18B20 Temperature Sensor
+  - TDS Sensor
+  - Turbidity Sensor
 
 ### Backend & Communication
-- **MQTT Protocol**: Lightweight messaging for real-time telemetry.
-- **Node.js / Python**: Scalable backend services and RESTful APIs.
-- **MongoDB**: NoSQL database optimized for time-series sensor data.
+
+- **MQTT Protocol** – lightweight real-time messaging
+- **Node.js / Python** – backend processing services
+- **REST APIs** – communication between backend and dashboard
+
+### Database
+
+- **MongoDB** – NoSQL time-series database optimized for sensor telemetry
 
 ### Machine Learning & Analytics
-- **Isolation Forest**: Used for robust anomaly detection (identifying equipment failure or contamination).
-- **ARIMA**: Time-series forecasting for predicting future water quality trends.
-- **WQI Algorithm**: Weighted formula for real-time health scoring.
+
+- **Isolation Forest** – anomaly detection for multi-sensor data
+- **ARIMA** – time-series forecasting for water quality trends
+- **WQI Algorithm** – weighted scoring model for water health
+- **Adaptive Baseline Monitoring** – statistical detection of environmental drift
 
 ### Frontend
-- **React.js**: Modern UI for real-time data visualization.
-- **Chart.js**: Interactive historical trend analysis.
+
+- **React.js** – web dashboard
+- **Chart.js** – real-time data visualization
 
 ---
 
@@ -63,44 +82,73 @@ graph TD
 
 ### 1. Water Quality Index (WQI)
 
-Multiple parameters are synthesized into a single health score using weighted averages.
+Multiple water parameters are combined into a single health score using weighted averages.
 
 ```
-WQI = (0.35 × pH) + (0.35 × TDS) + (0.20 × Turbidity) + (0.10 × Temp)
+WQI = (0.35 × pH) + (0.35 × TDS) + (0.20 × Turbidity) + (0.10 × Temperature)
 ```
 
 | WQI Range | Condition | Action Required |
 |----------|----------|----------------|
-| 80–100 | Stable | None |
+| 80–100 | Stable | No action required |
 | 60–80 | Monitor | Observe trends |
 | 40–60 | Warning | Maintenance recommended soon |
-| 20–40 | Action | Maintenance required immediately |
+| 20–40 | Action Required | Immediate maintenance |
 | <20 | Critical | Emergency intervention |
 
 ---
 
 ### 2. Intelligent Anomaly Detection
 
-The **Isolation Forest model** automatically flags outliers caused by:
+The **Isolation Forest model** identifies abnormal multi-sensor patterns that may indicate:
 
-- Filter failures  
-- Sudden chemical spikes  
-- Sensor malfunctions  
-- Contamination events  
+- filter clogging
+- contamination events
+- chemical instability
+- sensor malfunction
 
-without requiring manual thresholds.
+Because it does not require labeled data, it is well suited for **IoT anomaly detection**.
 
 ---
 
 ### 3. Predictive Forecasting
 
-The **ARIMA model** analyzes historical data to predict where water quality will be in the next **24 hours**, allowing proactive rather than reactive maintenance.
+The **ARIMA time-series model** predicts short-term water quality trends, allowing proactive maintenance actions before conditions become critical.
+
+Example predicted trends include:
+
+- rising turbidity levels
+- declining WQI stability
+- temperature drift
 
 ---
 
 ### 4. Alert Persistence Logic
 
-To eliminate **sensor noise and false alarms**, the system only triggers alerts after **five consecutive degraded readings**.
+To reduce false alarms caused by sensor noise, alerts are only triggered when:
+
+```
+Five consecutive degraded readings occur
+```
+
+This persistence logic significantly reduces **alarm fatigue**.
+
+---
+
+### 5. Adaptive Learning Loop
+
+The system improves over time using a **Human-in-the-Loop (HITL) feedback mechanism**.
+
+Workflow:
+
+1. Model detects a potential anomaly
+2. Dashboard displays alert
+3. User confirms or rejects the alert
+4. Verified feedback becomes labeled training data
+5. Drift monitoring evaluates model performance
+6. Batch recalibration updates the model
+
+This allows the system to evolve from a **generic synthetic-data model into a tank-specific intelligence system**.
 
 ---
 
@@ -108,12 +156,12 @@ To eliminate **sensor noise and false alarms**, the system only triggers alerts 
 
 ```
 smart-aquarium-iot-analytics-platform
-├── firmware/     # ESP32 C++ / Arduino sensor code
-├── backend/      # MQTT subscriber and API services
-├── analytics/    # WQI logic, Isolation Forest, and ARIMA models
-├── database/     # MongoDB schema and connection logic
-├── dashboard/    # React frontend application
-└── docs/         # Architecture diagrams and technical specs
+├── firmware/      # ESP32 sensor firmware
+├── backend/       # MQTT subscriber and API services
+├── analytics/     # WQI logic, preprocessing, ML models
+├── database/      # MongoDB schema and configuration
+├── dashboard/     # React frontend application
+└── docs/          # Architecture diagrams and technical documentation
 ```
 
 ---
@@ -127,17 +175,59 @@ smart-aquarium-iot-analytics-platform
   "ph": 6.8,
   "tds": 120,
   "turbidity": 2.3,
-  "status": "NORMAL"
+  "wqi": 84,
+  "status": "STABLE"
 }
 ```
 
 ---
 
+## 🔬 Data Processing Pipeline
+
+IoT sensor data contains noise, spikes, and missing values. A preprocessing pipeline prepares the data for analytics.
+
+Pipeline steps:
+
+```
+Raw Sensor Data
+      ↓
+Missing Value Handling (Forward Fill)
+      ↓
+Spike Removal (Median Filter)
+      ↓
+Sensor Sanity Checks
+      ↓
+Feature Engineering
+      ↓
+Machine Learning Models
+```
+
+Engineered features include:
+
+- rolling mean
+- rolling variance
+- rate of change (ROC)
+- stability indicators
+
+These features allow the system to detect **early signs of environmental instability**.
+
+---
+
+## 🔮 Future Improvements
+
+- automated water-change system
+- mobile monitoring application
+- cloud deployment for multi-tank monitoring
+- deep learning forecasting models
+- automated dosing and filtration control
+
+---
+
 ## ✍️ Authors
 
-- **M.Y.K. Kularathne**  
-- **H.M.N.S. Premachandra**  
-- **H.M.T.W. Dilshan**  
-- **H.M.D.C. Hennayake**
+**M.Y.K. Kularathne**  
+**H.M.N.S. Premachandra**  
+**H.M.T.W. Dilshan**  
+**H.M.D.C. Hennayake**
 
-**IoT & Data Analytics Evaluation Project — March 2026**
+**IoT & Data Analytics Evaluation Project — 2026**
