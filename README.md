@@ -6,193 +6,119 @@ This project demonstrates a **complete IoT data pipeline**, including embedded s
 
 ---
 
-# Overview
+## 📋 Overview
 
 Maintaining stable water quality is critical for aquarium ecosystems. Manual monitoring is inconsistent and often fails to detect gradual changes that can stress or harm fish.
 
 This system automates the monitoring process by:
 
-- Continuously collecting water quality data  
-- Analyzing sensor patterns using machine learning  
-- Forecasting potential issues before they occur  
-- Providing a clear maintenance recommendation through a dashboard  
+- **Continuously collecting** water quality data.
+- **Analyzing sensor patterns** using machine learning.
+- **Forecasting potential issues** before they occur.
+- **Providing clear recommendations** via an intuitive dashboard.
 
 The platform converts multiple sensor readings into a **Water Quality Index (WQI)** and combines it with anomaly detection and forecasting models to determine overall aquarium health.
 
 ---
 
-# System Architecture
+## 🏗️ System Architecture
 
-The platform follows a **layered IoT architecture** designed for modularity, scalability, and reliability.
+The platform follows a layered IoT architecture designed for modularity, scalability, and reliability.
 
-```
-Sensors (pH, Temperature, TDS, Turbidity)
-        ↓
-ESP32 Microcontroller
-        ↓
-MQTT Communication Layer
-        ↓
-Backend Data Ingestion Service
-        ↓
-MongoDB NoSQL Database
-        ↓
-Analytics Engine (WQI + ML Models)
-        ↓
-React Web Dashboard
+```mermaid
+graph TD
+    A[Sensors: pH, Temp, TDS, Turbidity] --> B[ESP32 Microcontroller]
+    B -- "MQTT (Telemetry Data)" --> C[Backend Ingestion Service]
+    C --> D[(MongoDB Time-Series DB)]
+    D --> E[Analytics Engine: WQI + ML Models]
+    E --> F[React Web Dashboard]
+    F --> G[Predictive Maintenance Alerts]
 ```
 
 ---
 
-## Device Layer
+## 🛠️ Technology Stack
 
-The ESP32 microcontroller collects sensor readings at fixed intervals and publishes structured data packets using MQTT.
+### Hardware
+- **ESP32 Microcontroller**: Central processing unit with integrated Wi-Fi.
+- **Sensors**: pH, DS18B20 Temperature, TDS (Total Dissolved Solids), and Turbidity.
 
----
+### Backend & Communication
+- **MQTT Protocol**: Lightweight messaging for real-time telemetry.
+- **Node.js / Python**: Scalable backend services and RESTful APIs.
+- **MongoDB**: NoSQL database optimized for time-series sensor data.
 
-## Communication Layer
+### Machine Learning & Analytics
+- **Isolation Forest**: Used for robust anomaly detection (identifying equipment failure or contamination).
+- **ARIMA**: Time-series forecasting for predicting future water quality trends.
+- **WQI Algorithm**: Weighted formula for real-time health scoring.
 
-MQTT enables lightweight and reliable real-time communication between the device and backend services.
-
----
-
-## Backend Layer
-
-Backend services handle:
-
-- Data validation  
-- Message processing  
-- Data storage  
-- API endpoints for dashboard access  
-
----
-
-## Data Storage Layer
-
-Sensor readings are stored in **MongoDB**, providing flexible schema design and efficient time-series data handling.
+### Frontend
+- **React.js**: Modern UI for real-time data visualization.
+- **Chart.js**: Interactive historical trend analysis.
 
 ---
 
-## Analytics Layer
+## 🚀 Key Features
 
-The analytics engine computes water quality metrics and runs machine learning models to detect anomalies and predict trends.
+### 1. Water Quality Index (WQI)
 
----
-
-## Dashboard Layer
-
-A web dashboard provides real-time visualization and maintenance recommendations.
-
----
-
-# Key Features
-
-## Real-Time IoT Monitoring
-
-Sensor readings are collected every **5 minutes** and transmitted to the backend for processing and storage.
-
----
-
-## Water Quality Index (WQI)
-
-Multiple water parameters are combined into a single health score.
+Multiple parameters are synthesized into a single health score using weighted averages.
 
 ```
-WQI = 0.35 × pH
-    + 0.35 × TDS
-    + 0.20 × Turbidity
-    + 0.10 × Temperature
+WQI = (0.35 × pH) + (0.35 × TDS) + (0.20 × Turbidity) + (0.10 × Temp)
 ```
 
-WQI provides a simplified representation of overall water quality.
-
-| WQI Range | Condition |
-|----------|----------|
-| 80–100 | Stable |
-| 60–80 | Monitor |
-| 40–60 | Recommended Soon |
-| 20–40 | Maintenance Required |
-| <20 | Critical |
+| WQI Range | Condition | Action Required |
+|----------|----------|----------------|
+| 80–100 | Stable | None |
+| 60–80 | Monitor | Observe trends |
+| 40–60 | Warning | Maintenance recommended soon |
+| 20–40 | Action | Maintenance required immediately |
+| <20 | Critical | Emergency intervention |
 
 ---
 
-## Anomaly Detection
+### 2. Intelligent Anomaly Detection
 
-An **Isolation Forest model** identifies abnormal patterns in sensor data that may indicate:
+The **Isolation Forest model** automatically flags outliers caused by:
 
 - Filter failures  
-- Contamination  
-- Sudden chemical changes  
-- Equipment malfunction  
+- Sudden chemical spikes  
+- Sensor malfunctions  
+- Contamination events  
+
+without requiring manual thresholds.
 
 ---
 
-## Predictive Forecasting
+### 3. Predictive Forecasting
 
-An **ARIMA time-series model** predicts short-term trends in sensor values to detect potential issues before they become critical.
-
----
-
-## Alert Persistence Logic
-
-To reduce false alarms, the system triggers alerts only after **five consecutive degraded readings**.
+The **ARIMA model** analyzes historical data to predict where water quality will be in the next **24 hours**, allowing proactive rather than reactive maintenance.
 
 ---
 
-## Interactive Dashboard
+### 4. Alert Persistence Logic
 
-The web dashboard provides:
-
-- Real-time sensor values  
-- Historical trend charts  
-- Water Quality Index visualization  
-- Anomaly alerts  
-- Maintenance recommendations  
-
-The dashboard supports both **Simple Mode** (for casual users) and **Advanced Mode** (for detailed analytics).
+To eliminate **sensor noise and false alarms**, the system only triggers alerts after **five consecutive degraded readings**.
 
 ---
 
-# Technology Stack
+## 📂 Project Structure
 
-## Hardware
-
-- ESP32 Microcontroller  
-- pH Sensor  
-- DS18B20 Temperature Sensor  
-- TDS Sensor  
-- Turbidity Sensor  
-
----
-
-## Backend
-
-- Node.js / Python  
-- MQTT Protocol  
-- REST API Services  
+```
+smart-aquarium-iot-analytics-platform
+├── firmware/     # ESP32 C++ / Arduino sensor code
+├── backend/      # MQTT subscriber and API services
+├── analytics/    # WQI logic, Isolation Forest, and ARIMA models
+├── database/     # MongoDB schema and connection logic
+├── dashboard/    # React frontend application
+└── docs/         # Architecture diagrams and technical specs
+```
 
 ---
 
-## Database
-
-- MongoDB (NoSQL time-series database)
-
----
-
-## Machine Learning
-
-- Isolation Forest (Anomaly Detection)  
-- ARIMA (Time-Series Forecasting)
-
----
-
-## Frontend
-
-- React.js  
-- Chart.js  
-
----
-
-# Example Sensor Data
+## 📋 Example Telemetry
 
 ```json
 {
@@ -207,56 +133,11 @@ The dashboard supports both **Simple Mode** (for casual users) and **Advanced Mo
 
 ---
 
-# Project Structure
-
-```
-smart-aquarium-iot-analytics-platform
-
-├── firmware/
-│   └── ESP32 sensor firmware
-│
-├── backend/
-│   └── MQTT subscriber and API services
-│
-├── analytics/
-│   └── WQI computation and machine learning models
-│
-├── database/
-│   └── MongoDB schema and configuration
-│
-├── dashboard/
-│   └── React frontend application
-│
-└── docs/
-    └── System architecture diagrams and documentation
-```
-
----
-
-# Use Cases
-
-- Home aquarium monitoring  
-- Aquaculture water quality management  
-- IoT system architecture demonstration  
-- Real-time sensor data analytics research  
-
----
-
-# Future Improvements
-
-- Automated water-change system  
-- Mobile application  
-- Cloud deployment  
-- Multi-aquarium monitoring  
-- Advanced deep learning forecasting models  
-
----
-
-# Authors
+## ✍️ Authors
 
 - **M.Y.K. Kularathne**  
 - **H.M.N.S. Premachandra**  
 - **H.M.T.W. Dilshan**  
 - **H.M.D.C. Hennayake**
 
-IoT & Data Analytics Project
+**IoT & Data Analytics Evaluation Project — March 2026**
