@@ -5,3 +5,5 @@ __pycache__/
 summary.txt
 plan.txt
 *.pyc
+frontend/node_modules/
+frontend/build/
