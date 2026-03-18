@@ -67,7 +67,7 @@ def main() -> None:
 
     df = pd.read_csv(DATA_CSV).tail(args.rows).reset_index(drop=True)
     print(f"[REPLAY] {len(df)} rows loaded")
-    print(f"[REPLAY] Speed: {args.speed}x  →  {delay:.1f}s per reading")
+    print(f"[REPLAY] Speed: {args.speed}x  ->  {delay:.1f}s per reading")
     print(f"[REPLAY] Target: mqtt://{args.broker}:{args.port}/{args.topic}")
     print()
 

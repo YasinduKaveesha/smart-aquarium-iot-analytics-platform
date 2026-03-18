@@ -7,3 +7,5 @@ plan.txt
 *.pyc
 frontend/node_modules/
 frontend/build/
+frontend/dist/
+backend/.env
