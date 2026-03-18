@@ -3,11 +3,12 @@ import { KPICard } from '../../components/KPICard';
 import { WQIGauge } from '../../components/WQIGauge';
 import {
   currentReading, sensorData, getWQIStatus, calculateTimeToCritical,
-  maintenanceHistory, anomalyEvents, systemMode, anomalyFlag, daysSinceInstall,
+  maintenanceHistory, systemMode, anomalyFlag, daysSinceInstall,
 } from '../../data/mockData';
 import { useLatest } from '../../hooks/useLatest';
 import { useStatus } from '../../hooks/useStatus';
 import { useHistory } from '../../hooks/useHistory';
+import { useAnomalies } from '../../hooks/useAnomalies';
 import { Thermometer, Droplets, Zap, Eye, Clock, AlertTriangle, CheckCircle, Activity, Cpu, Wrench, Wifi } from 'lucide-react';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 
@@ -24,6 +25,7 @@ export function AdvancedOverview() {
   const { reading: apiReading, anomalyFlag: apiAnomalyFlag, mode: apiMode } = useLatest();
   const { data: statusData } = useStatus();
   const { data: historyData } = useHistory();
+  const { data: anomalyData } = useAnomalies();
 
   const live      = apiReading ?? currentReading;
   const liveMode  = (apiMode || statusData?.mode || systemMode) as SystemMode;
@@ -93,7 +95,7 @@ export function AdvancedOverview() {
             </div>
             <div className="flex items-center gap-2">
               <AlertTriangle className="w-4 h-4 text-orange-500" />
-              <span className="text-sm text-[#444]">{anomalyEvents.length} anomalies detected</span>
+              <span className="text-sm text-[#444]">{anomalyData?.length ?? 0} anomalies detected</span>
             </div>
             <div className="flex items-center gap-2">
               <Activity className="w-4 h-4 text-blue-500" />

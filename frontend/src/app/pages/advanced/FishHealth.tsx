@@ -1,11 +1,12 @@
 import { AdvancedLayout } from '../../components/AdvancedLayout';
-import { fishSpecies, calculateFishStressScore, currentReading } from '../../data/mockData';
-import { Heart, AlertTriangle, CheckCircle, Info } from 'lucide-react';
+import { fishSpecies, currentReading } from '../../data/mockData';
+import { useLatest } from '../../hooks/useLatest';
+import { AlertTriangle, CheckCircle, Info } from 'lucide-react';
 import { RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis, ResponsiveContainer, Tooltip } from 'recharts';
 
 export function FishHealth() {
-  const stressScore = calculateFishStressScore();
-  const healthScore = Math.max(0, 100 - stressScore);
+  const { reading: apiReading } = useLatest();
+  const live = apiReading ?? currentReading;
 
   const getHealthStatus = (score: number) => {
     if (score >= 80) return { label: 'Excellent', color: '#4CAF50', bg: '#E8F5E9', icon: CheckCircle };
@@ -14,58 +15,25 @@ export function FishHealth() {
     return { label: 'Poor', color: '#F44336', bg: '#FFEBEE', icon: AlertTriangle };
   };
 
-  const healthStatus = getHealthStatus(healthScore);
-  const StatusIcon = healthStatus.icon;
-
   const ranges = fishSpecies.optimalRanges;
 
   const parameters = [
-    {
-      key: 'Temperature',
-      current: ranges.temperature.current,
-      min: ranges.temperature.min,
-      max: ranges.temperature.max,
-      unit: '°C',
-      color: '#E53E3E',
-      inRange: ranges.temperature.current >= ranges.temperature.min && ranges.temperature.current <= ranges.temperature.max,
-    },
-    {
-      key: 'pH',
-      current: ranges.pH.current,
-      min: ranges.pH.min,
-      max: ranges.pH.max,
-      unit: '',
-      color: '#3182CE',
-      inRange: ranges.pH.current >= ranges.pH.min && ranges.pH.current <= ranges.pH.max,
-    },
-    {
-      key: 'TDS',
-      current: ranges.tds.current,
-      min: ranges.tds.min,
-      max: ranges.tds.max,
-      unit: 'ppm',
-      color: '#D69E2E',
-      inRange: ranges.tds.current >= ranges.tds.min && ranges.tds.current <= ranges.tds.max,
-    },
-    {
-      key: 'Turbidity',
-      current: ranges.turbidity.current,
-      min: ranges.turbidity.min,
-      max: ranges.turbidity.max,
-      unit: 'NTU',
-      color: '#805AD5',
-      inRange: ranges.turbidity.current <= ranges.turbidity.max,
-    },
-    {
-      key: 'Dissolved O₂',
-      current: ranges.dissolvedOxygen.current,
-      min: ranges.dissolvedOxygen.min,
-      max: ranges.dissolvedOxygen.max,
-      unit: 'mg/L',
-      color: '#00ACC1',
-      inRange: ranges.dissolvedOxygen.current >= ranges.dissolvedOxygen.min && ranges.dissolvedOxygen.current <= ranges.dissolvedOxygen.max,
-    },
+    { key: 'Temperature', current: live.temperature, min: ranges.temperature.min, max: ranges.temperature.max, unit: '°C',   color: '#E53E3E', inRange: live.temperature >= ranges.temperature.min && live.temperature <= ranges.temperature.max },
+    { key: 'pH',          current: live.pH,          min: ranges.pH.min,          max: ranges.pH.max,          unit: '',     color: '#3182CE', inRange: live.pH >= ranges.pH.min && live.pH <= ranges.pH.max },
+    { key: 'TDS',         current: live.tds,         min: ranges.tds.min,         max: ranges.tds.max,         unit: 'ppm',  color: '#D69E2E', inRange: live.tds >= ranges.tds.min && live.tds <= ranges.tds.max },
+    { key: 'Turbidity',   current: live.turbidity,   min: ranges.turbidity.min,   max: ranges.turbidity.max,   unit: 'NTU',  color: '#805AD5', inRange: live.turbidity <= ranges.turbidity.max },
+    { key: 'Dissolved O₂', current: ranges.dissolvedOxygen.current, min: ranges.dissolvedOxygen.min, max: ranges.dissolvedOxygen.max, unit: 'mg/L', color: '#00ACC1', inRange: ranges.dissolvedOxygen.current >= ranges.dissolvedOxygen.min && ranges.dissolvedOxygen.current <= ranges.dissolvedOxygen.max },
   ];
+
+  const stressScore = parameters.reduce((acc, p) => {
+    if (!p.inRange) {
+      const range = p.max - p.min;
+      const deviation = range > 0 ? Math.abs(p.current - (p.min + range / 2)) / (range / 2) : 0;
+      return acc + Math.min(25, deviation * 20);
+    }
+    return acc;
+  }, 0);
+  const healthScore = Math.max(0, Math.round(100 - stressScore));
 
   const radarData = parameters.map(p => {
     const range = p.max - p.min;
@@ -74,6 +42,8 @@ export function FishHealth() {
   });
 
   const optimalCount = parameters.filter(p => p.inRange).length;
+  const healthStatus = getHealthStatus(healthScore);
+  const StatusIcon = healthStatus.icon;
 
   return (
     <AdvancedLayout>

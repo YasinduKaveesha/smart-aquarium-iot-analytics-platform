@@ -1,18 +1,14 @@
 import { SimpleLayout } from '../../components/SimpleLayout';
 import { maintenanceHistory, sensorData, getWQIStatus } from '../../data/mockData';
 import { useHistory } from '../../hooks/useHistory';
-import { Wrench, AlertTriangle, Droplets, Filter, CheckCircle } from 'lucide-react';
+import { useAnomalies } from '../../hooks/useAnomalies';
+import { AlertTriangle, CheckCircle } from 'lucide-react';
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts';
 
-const typeConfig = {
-  cleaning:     { icon: Wrench,        color: '#16A34A', bg: '#F0FDF4', label: 'Cleaning' },
-  alert:        { icon: AlertTriangle, color: '#D97706', bg: '#FFFBEB', label: 'Alert' },
-  waterChange:  { icon: Droplets,      color: '#2E75B6', bg: '#EFF6FF', label: 'Water Change' },
-  filterChange: { icon: Filter,        color: '#7C3AED', bg: '#F5F3FF', label: 'Filter Change' },
-};
 
 export function SimpleHistory() {
   const { data: historyData } = useHistory();
+  const { data: anomalyData } = useAnomalies();
   const histData = historyData ?? sensorData;
 
   const weeklyData = histData.filter((_, i) => i % 12 === 0).map(d => ({
@@ -81,25 +77,24 @@ export function SimpleHistory() {
 
         <p className="text-[10px] font-bold text-[#94A3B8] uppercase tracking-wider mb-3">Event Log</p>
         <div className="space-y-2">
-          {maintenanceHistory.map((event, i) => {
-            const cfg = typeConfig[event.type];
-            const Icon = cfg.icon;
-            const date = new Date(event.date);
+          {(anomalyData && anomalyData.length > 0 ? anomalyData : maintenanceHistory.map(e => ({
+            timestamp: e.date, parameter: e.type, anomalyScore: 0.6, persistence: 1, message: e.message,
+          }))).map((event, i) => {
+            const isAnomaly = 'anomalyScore' in event;
+            const color = isAnomaly ? '#D97706' : '#16A34A';
+            const bg = isAnomaly ? '#FFFBEB' : '#F0FDF4';
+            const label = isAnomaly ? event.parameter : (event as any).type;
+            const date = new Date(event.timestamp);
             const isRecent = Date.now() - date.getTime() < 48 * 3600 * 1000;
             return (
-              <div key={i} className="bg-white rounded-2xl px-4 py-3 flex items-center gap-3 relative" style={{ border: `1.5px solid ${isRecent ? cfg.color + '30' : '#F1F5F9'}`, boxShadow: '0 1px 4px rgba(0,0,0,0.04)' }}>
-                {isRecent && <div className="absolute top-3 right-3 w-2 h-2 rounded-full animate-pulse" style={{ background: cfg.color }} />}
-                <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: cfg.bg }}>
-                  <Icon className="w-4 h-4" style={{ color: cfg.color }} />
+              <div key={i} className="bg-white rounded-2xl px-4 py-3 flex items-center gap-3 relative" style={{ border: `1.5px solid ${isRecent ? color + '30' : '#F1F5F9'}`, boxShadow: '0 1px 4px rgba(0,0,0,0.04)' }}>
+                {isRecent && <div className="absolute top-3 right-3 w-2 h-2 rounded-full animate-pulse" style={{ background: color }} />}
+                <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: bg }}>
+                  <AlertTriangle className="w-4 h-4" style={{ color }} />
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-                    <span className="text-xs font-bold px-2 py-0.5 rounded-full" style={{ background: cfg.bg, color: cfg.color }}>{cfg.label}</span>
-                    {event.wqi && (
-                      <span className="text-[10px] font-semibold text-[#94A3B8]">
-                        WQI <span className="font-black" style={{ color: getWQIStatus(event.wqi).color }}>{event.wqi}</span>
-                      </span>
-                    )}
+                    <span className="text-xs font-bold px-2 py-0.5 rounded-full" style={{ background: bg, color }}>{label}</span>
                   </div>
                   <p className="text-sm text-[#334155] leading-snug">{event.message}</p>
                   <p className="text-[10px] text-[#94A3B8] mt-0.5">
@@ -107,7 +102,7 @@ export function SimpleHistory() {
                   </p>
                 </div>
                 <div className="flex-shrink-0">
-                  {event.type === 'alert' ? <AlertTriangle className="w-4 h-4 text-amber-400" /> : <CheckCircle className="w-4 h-4 text-green-400" />}
+                  {isAnomaly ? <AlertTriangle className="w-4 h-4 text-amber-400" /> : <CheckCircle className="w-4 h-4 text-green-400" />}
                 </div>
               </div>
             );
