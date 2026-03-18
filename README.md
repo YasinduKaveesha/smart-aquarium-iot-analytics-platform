@@ -2,232 +2,220 @@
 
 An **adaptive AI-driven IoT monitoring and decision-support platform** that continuously tracks aquarium water conditions and generates intelligent maintenance recommendations using real-time sensor data, statistical monitoring, and machine learning.
 
-This project demonstrates a **complete IoT data pipeline**, including embedded sensor integration, MQTT communication, backend data ingestion, NoSQL storage, preprocessing pipelines, machine learning analytics, and a web-based dashboard for real-time monitoring.
-
-The system evolves over time using **human-in-the-loop feedback, concept drift monitoring, and batch recalibration**, allowing the analytics models to adapt to the specific behavior of a real aquarium.
+This project demonstrates a **complete IoT data pipeline**, including embedded sensor integration, MQTT communication, FastAPI backend, MongoDB storage, ML analytics, and a React web dashboard for real-time monitoring.
 
 ---
 
-## 📋 Overview
-
-Maintaining stable water quality is critical for aquarium ecosystems. Manual monitoring is inconsistent and often fails to detect gradual environmental changes that can stress or harm fish.
-
-This system automates monitoring and provides **intelligent decision support** by:
-
-- **Continuously collecting** water quality telemetry from IoT sensors.
-- **Cleaning and preprocessing** noisy sensor data streams.
-- **Computing a Water Quality Index (WQI)** for simplified health monitoring.
-- **Detecting anomalies** using machine learning.
-- **Forecasting potential issues** before they occur.
-- **Providing actionable maintenance recommendations** through a dashboard.
-
-The platform converts multiple sensor readings into a **single interpretable health score** and combines this with anomaly detection and forecasting models to determine overall aquarium stability.
-
----
-
-## 🏗️ System Architecture
-
-The platform follows a **layered IoT + AI architecture** designed for modularity, scalability, and reliability.
+## System Architecture
 
 ```mermaid
 graph TD
-    A[Sensors: pH, Temp, TDS, Turbidity] --> B[ESP32 Microcontroller]
-    B -- "MQTT Telemetry Data" --> C[Backend Ingestion Service]
-    C --> D[(MongoDB Time-Series Database)]
-    D --> E[Preprocessing Pipeline]
-    E --> F[Analytics Engine: WQI + ML Models]
-    F --> G[React Web Dashboard]
-    G --> H[User Feedback Interface]
-    H --> I[Drift Monitoring + Retraining Pipeline]
+    A[Sensors: pH / Temp / TDS / Turbidity] --> B[ESP32 Microcontroller]
+    B -- MQTT JSON Payload --> C[Mosquitto Broker]
+    C --> D[FastAPI Backend]
+    D --> E[(MongoDB - aquarium DB)]
+    D --> F[ML Pipeline Router]
+    F --> G[Isolation Forest · SARIMA · Fuzzy WQI]
+    E --> H[React Dashboard]
+    G --> H
 ```
 
 ---
 
-## 🛠️ Technology Stack
+## Technology Stack
 
-### Hardware
-
-- **ESP32 Microcontroller** – Wi-Fi enabled microcontroller for sensor integration
-- **Sensors**
-  - pH Sensor
-  - DS18B20 Temperature Sensor
-  - TDS Sensor
-  - Turbidity Sensor
-
-### Backend & Communication
-
-- **MQTT Protocol** – lightweight real-time messaging
-- **Node.js / Python** – backend processing services
-- **REST APIs** – communication between backend and dashboard
-
-### Database
-
-- **MongoDB** – NoSQL time-series database optimized for sensor telemetry
-
-### Machine Learning & Analytics
-
-- **Isolation Forest** – anomaly detection for multi-sensor data
-- **ARIMA** – time-series forecasting for water quality trends
-- **WQI Algorithm** – weighted scoring model for water health
-- **Adaptive Baseline Monitoring** – statistical detection of environmental drift
-
-### Frontend
-
-- **React.js** – web dashboard
-- **Chart.js** – real-time data visualization
+| Layer | Technology |
+|---|---|
+| IoT Device | ESP32 + pH / DS18B20 / TDS / Turbidity sensors |
+| Messaging | MQTT (Eclipse Mosquitto) |
+| Backend | FastAPI + Uvicorn (Python) |
+| Database | MongoDB (Motor async driver) |
+| ML / Analytics | scikit-learn, statsmodels, numpy, pandas |
+| Frontend | React + TypeScript + Vite + Tailwind CSS |
+| Charts | Recharts |
 
 ---
 
-## 🚀 Key Features
+## Key Features
 
 ### 1. Water Quality Index (WQI)
-
-Multiple water parameters are combined into a single health score using weighted averages.
+Fuzzy weighted scoring with compound stress penalty and anomaly confidence weight.
 
 ```
-WQI = (0.35 × pH) + (0.35 × TDS) + (0.20 × Turbidity) + (0.10 × Temperature)
+WQI = (pH × 0.35) + (TDS × 0.35) + (Turbidity × 0.20) + (Temperature × 0.10)
+    − anomaly_penalty (applied by Isolation Forest)
 ```
 
-| WQI Range | Condition | Action Required |
-|----------|----------|----------------|
-| 80–100 | Stable | No action required |
-| 60–80 | Monitor | Observe trends |
-| 40–60 | Warning | Maintenance recommended soon |
-| 20–40 | Action Required | Immediate maintenance |
-| <20 | Critical | Emergency intervention |
+| WQI | Condition |
+|---|---|
+| 85–100 | Excellent |
+| 70–84 | Good |
+| 50–69 | Fair |
+| 30–49 | Poor |
+| < 30 | Critical |
+
+### 2. Pipeline Router Modes
+
+| Mode | Trigger |
+|---|---|
+| `COLD_START` | Tank age < 14 days — no anomaly detection |
+| `ADAPTIVE` | Tank age ≥ 14 days — full ML pipeline active |
+| `MAINTENANCE` | User toggled water change — WQI paused |
+| `STABILIZING` | 10-minute cooldown after maintenance ends |
+| `SENSOR_ERROR` | One or more sensors out of valid range |
+
+### 3. SARIMA Forecasting
+- pH: `SARIMA(1,1,0)(0,0,1,24)` — lower CI as pessimistic acid-crash risk bound
+- Temperature: `SARIMA(1,0,1)(0,1,0,24)` — upper CI as overheating risk bound
+- 24-hour ahead predictions cached per UTC hour
+
+### 4. Anomaly Detection
+Isolation Forest on 4-sensor feature vector. Consecutive anomaly docs (gap < 7.5 min) clustered into `AnomalyEvent` with `persistence` count.
+
+### 5. Live MQTT → Dashboard Pipeline
+ESP32 publishes → Mosquitto → FastAPI subscriber → ML pipeline → MongoDB → React auto-refresh every 30s.
 
 ---
 
-### 2. Intelligent Anomaly Detection
-
-The **Isolation Forest model** identifies abnormal multi-sensor patterns that may indicate:
-
-- filter clogging
-- contamination events
-- chemical instability
-- sensor malfunction
-
-Because it does not require labeled data, it is well suited for **IoT anomaly detection**.
-
----
-
-### 3. Predictive Forecasting
-
-The **ARIMA time-series model** predicts short-term water quality trends, allowing proactive maintenance actions before conditions become critical.
-
-Example predicted trends include:
-
-- rising turbidity levels
-- declining WQI stability
-- temperature drift
-
----
-
-### 4. Alert Persistence Logic
-
-To reduce false alarms caused by sensor noise, alerts are only triggered when:
+## Project Structure
 
 ```
-Five consecutive degraded readings occur
-```
-
-This persistence logic significantly reduces **alarm fatigue**.
-
----
-
-### 5. Adaptive Learning Loop
-
-The system improves over time using a **Human-in-the-Loop (HITL) feedback mechanism**.
-
-Workflow:
-
-1. Model detects a potential anomaly
-2. Dashboard displays alert
-3. User confirms or rejects the alert
-4. Verified feedback becomes labeled training data
-5. Drift monitoring evaluates model performance
-6. Batch recalibration updates the model
-
-This allows the system to evolve from a **generic synthetic-data model into a tank-specific intelligence system**.
-
----
-
-## 📂 Project Structure
-
-```
-smart-aquarium-iot-analytics-platform
-├── firmware/      # ESP32 sensor firmware
-├── backend/       # MQTT subscriber and API services
-├── analytics/     # WQI logic, preprocessing, ML models
-├── database/      # MongoDB schema and configuration
-├── dashboard/     # React frontend application
-└── docs/          # Architecture diagrams and technical documentation
+smart-aquarium-iot-analytics-platform/
+├── backend/
+│   ├── app/
+│   │   ├── main.py              # FastAPI app + lifespan
+│   │   ├── config.py            # Pydantic settings
+│   │   ├── database.py          # Motor MongoDB helpers
+│   │   ├── models.py            # Pydantic request/response schemas
+│   │   ├── mqtt_client.py       # Paho MQTT subscriber
+│   │   ├── dependencies.py      # FastAPI dependency injection
+│   │   ├── routers/             # latest, status, telemetry, forecast, history, maintenance
+│   │   └── services/            # pipeline_service, forecast_cache
+│   ├── seed_demo_data.py        # Populate 7 days of history from CSV
+│   ├── replay_sensor.py         # Simulate ESP32 via MQTT (demo)
+│   └── requirements.txt
+├── frontend/
+│   └── src/app/
+│       ├── pages/
+│       │   ├── simple/          # Overview, Status, History
+│       │   └── advanced/        # Overview, SensorAnalytics, Forecast, WQIBreakdown, AnomalyDetection, FishHealth
+│       ├── hooks/               # useLatest, useStatus, useHistory, useForecast, useAnomalies, useMaintenance
+│       ├── api/                 # client.ts, types.ts
+│       └── components/          # WQIGauge, KPICard, layouts, UI
+├── notebooks/
+│   ├── 01_eda.ipynb
+│   ├── 02_preprocessing.ipynb
+│   ├── 03_anomaly_detector.ipynb
+│   └── 04_adaptive_wqi.ipynb
+├── src/
+│   ├── pipeline_router.py       # AquariumPipelineRouter — single ML entry point
+│   └── forecasting_pipeline.py  # SARIMAForecaster
+└── data/
+    └── smart_aquarium_dataset_v6.1.csv
 ```
 
 ---
 
-## 📋 Example Telemetry
+## API Endpoints
+
+| Method | Endpoint | Description |
+|---|---|---|
+| GET | `/api/latest` | Most recent sensor reading + WQI |
+| GET | `/api/status` | System mode, install date, days until adaptive |
+| GET | `/api/history?days=7` | Historical telemetry records |
+| GET | `/api/forecast` | 24h SARIMA pH + temperature forecast |
+| GET | `/api/anomalies?limit=50` | Clustered anomaly events |
+| POST | `/api/telemetry` | Ingest reading via HTTP (same path as MQTT) |
+| POST | `/api/maintenance/start` | Activate maintenance mode |
+| POST | `/api/maintenance/stop` | Deactivate + start 10-min stabilising cooldown |
+
+---
+
+## Running Locally
+
+### Prerequisites
+- Docker Desktop (MongoDB + Mosquitto)
+- Python 3.10+ with pip
+- Node.js 18+
+
+### Steps
+
+**1. Start Docker services**
+```bash
+docker start mongo mosquitto
+```
+
+**2. Install backend dependencies**
+```bash
+pip install -r backend/requirements.txt
+```
+
+**3. Start the backend**
+```bash
+cd backend
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+**4. Start the frontend**
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+**5. Seed demo data**
+```bash
+python backend/seed_demo_data.py
+```
+
+**6. Run live sensor replay (optional)**
+```bash
+python backend/replay_sensor.py --rows 100 --speed 60
+```
+
+**7. Open the app**
+- Simple mode: `http://localhost:5173/simple`
+- Advanced mode: `http://localhost:5173/advanced/overview`
+- API docs: `http://localhost:8000/docs`
+
+---
+
+## Environment Variables
+
+Copy `backend/.env.example` to `backend/.env` and configure:
+
+```env
+MONGODB_URL=mongodb://localhost:27017
+MONGODB_DB=aquarium
+MQTT_BROKER=localhost
+MQTT_PORT=1883
+MQTT_TOPIC=aquarium/telemetry
+INSTALL_DATE=2026-01-01
+CORS_ORIGINS=["http://localhost:5173"]
+```
+
+---
+
+## MQTT Payload Format
+
+The ESP32 (or replay script) publishes to `aquarium/telemetry`:
 
 ```json
 {
-  "timestamp": "2026-02-10T10:15:00Z",
-  "temperature": 25.3,
-  "ph": 6.8,
-  "tds": 120,
-  "turbidity": 2.3,
-  "wqi": 84,
-  "status": "STABLE"
+  "ph": 7.2,
+  "temperature": 26.1,
+  "tds": 285,
+  "turbidity": 3.4
 }
 ```
 
 ---
 
-## 🔬 Data Processing Pipeline
+## Authors
 
-IoT sensor data contains noise, spikes, and missing values. A preprocessing pipeline prepares the data for analytics.
-
-Pipeline steps:
-
-```
-Raw Sensor Data
-      ↓
-Missing Value Handling (Forward Fill)
-      ↓
-Spike Removal (Median Filter)
-      ↓
-Sensor Sanity Checks
-      ↓
-Feature Engineering
-      ↓
-Machine Learning Models
-```
-
-Engineered features include:
-
-- rolling mean
-- rolling variance
-- rate of change (ROC)
-- stability indicators
-
-These features allow the system to detect **early signs of environmental instability**.
-
----
-
-## 🔮 Future Improvements
-
-- automated water-change system
-- mobile monitoring application
-- cloud deployment for multi-tank monitoring
-- deep learning forecasting models
-- automated dosing and filtration control
-
----
-
-## ✍️ Authors
-
-**M.Y.K. Kularathne**  
-**H.M.N.S. Premachandra**  
-**H.M.T.W. Dilshan**  
+**M.Y.K. Kularathne**
+**H.M.N.S. Premachandra**
+**H.M.T.W. Dilshan**
 **H.M.D.C. Hennayake**
 
-**IoT & Data Analytics Evaluation Project — 2026**
+IoT & Data Analytics Evaluation Project — 2026
