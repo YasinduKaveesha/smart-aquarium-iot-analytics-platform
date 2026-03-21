@@ -100,9 +100,10 @@ async def insert_telemetry(db: AsyncIOMotorDatabase, doc: dict[str, Any]) -> str
 
 
 async def fetch_latest(db: AsyncIOMotorDatabase) -> dict[str, Any] | None:
-    """Return the single most recent telemetry document, or None if empty."""
+    """Return the single most recent telemetry document, or None if empty.
+    Filters for docs with 'timestamp' field to exclude raw ESP32 documents."""
     doc = await db.telemetry.find_one(
-        {},
+        {"timestamp": {"$exists": True}},
         sort=[("timestamp", DESCENDING)],
     )
     return doc
@@ -134,7 +135,7 @@ async def fetch_anomalies(
     Fetches more than the UI limit so clustering can group correctly.
     """
     cursor = db.telemetry.find(
-        {"anomaly_flag": 1},
+        {"anomaly_flag": 1, "timestamp": {"$exists": True}},
         sort=[("timestamp", ASCENDING)],
         limit=limit,
     )

@@ -72,21 +72,24 @@ async def lifespan(app: FastAPI):
         raise RuntimeError(f"[STARTUP] Pipeline dry-run failed: {exc}") from exc
 
     # ── 6. MQTT subscriber ───────────────────────────────────────────────────
-    import asyncio
-    from app.mqtt_client import build_mqtt_client
+    if settings.MQTT_BROKER:
+        import asyncio
+        from app.mqtt_client import build_mqtt_client
 
-    loop = asyncio.get_running_loop()
-    mqtt_client = build_mqtt_client(app.state, loop)
-    try:
-        mqtt_client.connect(settings.MQTT_BROKER, settings.MQTT_PORT, keepalive=60)
-        threading.Thread(target=mqtt_client.loop_forever, daemon=True, name="mqtt-loop").start()
-        app.state.mqtt_client = mqtt_client
-        print(f"[STARTUP] MQTT subscriber started -> {settings.MQTT_BROKER}:{settings.MQTT_PORT}"
-              f"  topic={settings.MQTT_TOPIC}")
-    except Exception as exc:
-        # MQTT failure is non-fatal for development — log and continue
-        print(f"[STARTUP] MQTT connection failed (will use HTTP fallback): {exc}")
+        loop = asyncio.get_running_loop()
+        mqtt_client = build_mqtt_client(app.state, loop)
+        try:
+            mqtt_client.connect(settings.MQTT_BROKER, settings.MQTT_PORT, keepalive=60)
+            threading.Thread(target=mqtt_client.loop_forever, daemon=True, name="mqtt-loop").start()
+            app.state.mqtt_client = mqtt_client
+            print(f"[STARTUP] MQTT subscriber started -> {settings.MQTT_BROKER}:{settings.MQTT_PORT}"
+                  f"  topic={settings.MQTT_TOPIC}")
+        except Exception as exc:
+            print(f"[STARTUP] MQTT connection failed (will use HTTP fallback): {exc}")
+            app.state.mqtt_client = None
+    else:
         app.state.mqtt_client = None
+        print("[STARTUP] MQTT disabled — using HTTP POST via mqtt_to_mongo.py")
 
     yield  # ← server is live, handle requests
 

@@ -19,8 +19,9 @@ from pydantic import BaseModel
 
 class TelemetryRequest(BaseModel):
     """Body for POST /api/telemetry (manual/debug endpoint).
-    MQTT messages use the same 4-field JSON payload, parsed in mqtt_client.py."""
-    ph:          float
+    MQTT messages use the same 4-field JSON payload, parsed in mqtt_client.py.
+    pH is optional — when absent (None), the pipeline detects SENSOR_ERROR."""
+    ph:          float | None = None
     temperature: float
     tds:         float
     turbidity:   float
