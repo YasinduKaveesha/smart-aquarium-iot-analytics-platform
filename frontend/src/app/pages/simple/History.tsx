@@ -1,24 +1,32 @@
 import { SimpleLayout } from '../../components/SimpleLayout';
 import { maintenanceHistory, sensorData, getWQIStatus } from '../../data/mockData';
+import { useLatest } from '../../hooks/useLatest';
 import { useHistory } from '../../hooks/useHistory';
 import { useAnomalies } from '../../hooks/useAnomalies';
-import { AlertTriangle, CheckCircle } from 'lucide-react';
+import { AlertTriangle, CheckCircle, Wifi } from 'lucide-react';
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts';
 
 
 export function SimpleHistory() {
+  const { mode: apiMode, sensorErrors } = useLatest();
   const { data: historyData } = useHistory();
   const { data: anomalyData } = useAnomalies();
   const histData = historyData ?? sensorData;
 
+  const isSensorError = apiMode === 'SENSOR_ERROR';
+  const phFailed = isSensorError && sensorErrors.some(e => e.toLowerCase().includes('ph'));
+
   const weeklyData = histData.filter((_, i) => i % 12 === 0).map(d => ({
     date: new Date(d.timestamp).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
     wqi: d.wqi,
+    unavailable: d.pH === 0 && d.wqi === 0,
   }));
 
-  const avgWqi = Math.round(weeklyData.reduce((s, d) => s + d.wqi, 0) / weeklyData.length);
-  const minWqi = Math.min(...weeklyData.map(d => d.wqi));
-  const maxWqi = Math.max(...weeklyData.map(d => d.wqi));
+  // Exclude sensor-failure entries from stats
+  const validWeekly = weeklyData.filter(d => !d.unavailable);
+  const avgWqi = validWeekly.length > 0 ? Math.round(validWeekly.reduce((s, d) => s + d.wqi, 0) / validWeekly.length) : 0;
+  const minWqi = validWeekly.length > 0 ? Math.min(...validWeekly.map(d => d.wqi)) : 0;
+  const maxWqi = validWeekly.length > 0 ? Math.max(...validWeekly.map(d => d.wqi)) : 0;
   const wqiInfo = getWQIStatus(avgWqi);
 
   return (
@@ -43,6 +51,13 @@ export function SimpleHistory() {
           </div>
         </div>
 
+        {phFailed && (
+          <div className="flex items-center gap-2 px-4 py-2.5 rounded-2xl mb-4" style={{ background: '#FEF2F2', border: '1.5px solid #FECACA' }}>
+            <Wifi className="w-3.5 h-3.5 text-red-500 flex-shrink-0" />
+            <p className="text-xs text-red-700"><span className="font-bold">pH sensor offline.</span> WQI data from sensor failure periods is excluded from stats and chart.</p>
+          </div>
+        )}
+
         <div className="bg-white rounded-2xl px-4 pt-4 pb-3 mb-5 shadow-sm" style={{ border: '1.5px solid #F1F5F9' }}>
           <div className="flex items-center justify-between mb-3">
             <p className="text-[10px] font-bold text-[#94A3B8] uppercase tracking-wider">Water Quality · Last 7 Days</p>
@@ -58,7 +73,7 @@ export function SimpleHistory() {
             </div>
           </div>
           <ResponsiveContainer width="100%" height={160}>
-            <AreaChart data={weeklyData} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
+            <AreaChart data={validWeekly} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
               <defs>
                 <linearGradient id="histGrad" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="0%" stopColor={wqiInfo.color} stopOpacity={0.3} />

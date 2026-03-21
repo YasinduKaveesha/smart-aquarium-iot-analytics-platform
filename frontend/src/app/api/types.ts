@@ -10,6 +10,7 @@ export interface LatestResponse {
   anomaly_flag: number
   mode: string
   breakdown: Record<string, number>
+  sensor_errors?: string[]
 }
 
 export interface StatusResponse {

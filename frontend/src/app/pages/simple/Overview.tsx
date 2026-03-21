@@ -29,7 +29,7 @@ const modeConfig = {
 export function SimpleOverview() {
   const navigate = useNavigate();
 
-  const { reading: apiReading, anomalyFlag: apiAnomalyFlag, mode: apiMode } = useLatest();
+  const { reading: apiReading, anomalyFlag: apiAnomalyFlag, mode: apiMode, sensorErrors } = useLatest();
   const { data: statusData } = useStatus();
   const { data: historyData } = useHistory();
   const { startMaintenance, stopMaintenance } = useMaintenance();
@@ -73,19 +73,25 @@ export function SimpleOverview() {
   const hoursLeft = calculateTimeToCritical();
 
   const histData   = historyData ?? sensorData;
-  const sparkData  = histData.slice(-24).map(d => ({ v: d.wqi }));
+  const sparkData  = histData.slice(-24).filter(d => !(d.pH === 0 && d.wqi === 0)).map(d => ({ v: d.wqi }));
   const weeklyData = histData
     .filter((_, i) => i % 12 === 0)
     .map(d => ({
       date: new Date(d.timestamp).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
       wqi: d.wqi,
+      unavailable: d.pH === 0 && d.wqi === 0,
     }));
+  // For charts that can't handle null, use only valid data
+  const validWeeklyData = weeklyData.filter(d => !d.unavailable);
+
+  const isSensorError = effectiveMode === 'SENSOR_ERROR';
+  const phFailed = isSensorError && (live.pH === 0 || sensorErrors.some(e => e.toLowerCase().includes('ph')));
 
   const sensors = [
-    { icon: Thermometer, label: 'Temperature', value: `${live.temperature.toFixed(1)}°C`, color: '#F87171', ok: live.temperature >= 24 && live.temperature <= 28, range: '24–28°C' },
-    { icon: Droplets,   label: 'pH Level',     value: live.pH.toFixed(2),                 color: '#60A5FA', ok: live.pH >= 6.5 && live.pH <= 7.5,                range: '6.5–7.5' },
-    { icon: Zap,        label: 'TDS',          value: `${live.tds} ppm`,                  color: '#FBBF24', ok: live.tds <= 350,                                  range: '< 350 ppm' },
-    { icon: Eye,        label: 'Turbidity',    value: `${live.turbidity.toFixed(1)} NTU`, color: '#A78BFA', ok: live.turbidity <= 5,                              range: '< 5 NTU' },
+    { icon: Thermometer, label: 'Temperature', value: `${live.temperature.toFixed(1)}°C`, color: '#F87171', ok: live.temperature >= 24 && live.temperature <= 28, range: '24–28°C', failed: false },
+    { icon: Droplets,   label: 'pH Level',     value: phFailed ? '--' : live.pH.toFixed(2), color: '#60A5FA', ok: !phFailed && live.pH >= 6.5 && live.pH <= 7.5, range: '6.5–7.5', failed: phFailed },
+    { icon: Zap,        label: 'TDS',          value: `${live.tds} ppm`,                  color: '#FBBF24', ok: live.tds <= 350,                                  range: '< 350 ppm', failed: false },
+    { icon: Eye,        label: 'Turbidity',    value: `${live.turbidity.toFixed(1)} NTU`, color: '#A78BFA', ok: live.turbidity <= 5,                              range: '< 5 NTU', failed: false },
   ];
 
   return (
@@ -117,11 +123,11 @@ export function SimpleOverview() {
               {/* Gauge — arc only, bigger, no duplicate text */}
               <div className="relative flex-shrink-0">
                 <WQIGauge
-                  value={maintenance ? 0 : live.wqi}
+                  value={maintenance || isSensorError ? 0 : live.wqi}
                   size={185}
-                  color={maintenance ? '#475569' : wqi.color}
+                  color={maintenance ? '#475569' : isSensorError ? '#EF4444' : wqi.color}
                   bgColor="rgba(255,255,255,0.06)"
-                  status={maintenance ? 'Paused' : wqi.status}
+                  status={maintenance ? 'Paused' : isSensorError ? 'N/A' : wqi.status}
                   arcOnly
                 />
                 {/* Score centred inside the arc */}
@@ -130,6 +136,11 @@ export function SimpleOverview() {
                     <>
                       <Wrench className="w-8 h-8 text-slate-400 mb-1" />
                       <p className="text-xs font-black text-slate-400 tracking-widest">PAUSED</p>
+                    </>
+                  ) : isSensorError ? (
+                    <>
+                      <Wifi className="w-8 h-8 text-red-400 mb-1" />
+                      <p className="text-xs font-black text-red-400 tracking-widest">N/A</p>
                     </>
                   ) : (
                     <>
@@ -145,6 +156,14 @@ export function SimpleOverview() {
                   <>
                     <p className="text-xl font-black text-slate-300 mb-1.5">Sensors paused</p>
                     <p className="text-sm text-slate-400">Tap the toggle below when your water change is complete.</p>
+                  </>
+                ) : isSensorError ? (
+                  <>
+                    <div className="flex items-center gap-2 mb-1.5">
+                      <span className="text-sm font-bold px-3 py-1 rounded-full" style={{ background: 'rgba(239,68,68,0.2)', color: '#FCA5A5' }}>Sensor Failure</span>
+                    </div>
+                    <p className="text-sm text-red-300 mb-2 leading-relaxed">pH sensor not connected. WQI prediction unavailable.</p>
+                    <p className="text-xs text-blue-400">Other sensors are reporting normally.</p>
                   </>
                 ) : (
                   <>
@@ -197,25 +216,32 @@ export function SimpleOverview() {
         {/* ═══════════════════ BODY ═══════════════════ */}
         <div className="px-4 pt-4 max-w-2xl mx-auto lg:max-w-none lg:px-10">
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-8">
-            {sensors.map(({ icon: Icon, label, value, color, ok, range }) => (
-              <div key={label} className="bg-white rounded-2xl px-4 py-5 relative overflow-hidden flex flex-col justify-between" style={{ minHeight: 130, border: `1.5px solid ${ok ? '#F0FDF4' : '#FFF7ED'}`, boxShadow: '0 1px 6px rgba(0,0,0,0.05)' }}>
-                <div className="absolute -top-5 -right-5 w-14 h-14 rounded-full pointer-events-none" style={{ background: `radial-gradient(circle, ${color}, transparent)`, opacity: 0.08 }} />
-                {/* Top: icon + label in icon color, check on right */}
+            {sensors.map(({ icon: Icon, label, value, color, ok, range, failed }) => (
+              <div key={label} className="bg-white rounded-2xl px-4 py-5 relative overflow-hidden flex flex-col justify-between" style={{ minHeight: 130, border: `1.5px solid ${failed ? '#FEE2E2' : ok ? '#F0FDF4' : '#FFF7ED'}`, boxShadow: '0 1px 6px rgba(0,0,0,0.05)', opacity: failed ? 0.85 : 1 }}>
+                <div className="absolute -top-5 -right-5 w-14 h-14 rounded-full pointer-events-none" style={{ background: `radial-gradient(circle, ${failed ? '#EF4444' : color}, transparent)`, opacity: 0.08 }} />
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
-                    <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: `${color}15` }}>
-                      <Icon className="w-4 h-4" style={{ color }} />
+                    <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: failed ? '#FEE2E2' : `${color}15` }}>
+                      <Icon className="w-4 h-4" style={{ color: failed ? '#EF4444' : color }} />
                     </div>
-                    <p className="text-xs font-bold uppercase tracking-wider" style={{ color }}>{label}</p>
+                    <p className="text-xs font-bold uppercase tracking-wider" style={{ color: failed ? '#EF4444' : color }}>{label}</p>
                   </div>
-                  {ok ? <CheckCircle className="w-3.5 h-3.5 text-green-500 flex-shrink-0" /> : <AlertCircle className="w-3.5 h-3.5 text-amber-500 flex-shrink-0" />}
+                  {failed ? <Wifi className="w-3.5 h-3.5 text-red-500 flex-shrink-0" /> : ok ? <CheckCircle className="w-3.5 h-3.5 text-green-500 flex-shrink-0" /> : <AlertCircle className="w-3.5 h-3.5 text-amber-500 flex-shrink-0" />}
                 </div>
-                {/* Bottom: range left, value right */}
                 <div className="flex items-end justify-between gap-2">
-                  <p className="text-[9px]" style={{ color: ok ? '#16A34A' : '#B45309' }}>
-                    {ok ? '✓ Good' : '! Watch'} · {range}
-                  </p>
-                  <p className="text-2xl font-black leading-none shrink-0" style={{ color: ok ? '#16A34A' : '#B45309' }}>{value}</p>
+                  {failed ? (
+                    <>
+                      <p className="text-[9px] text-red-500">Sensor not connected</p>
+                      <p className="text-lg font-black leading-none text-red-400">FAULT</p>
+                    </>
+                  ) : (
+                    <>
+                      <p className="text-[9px]" style={{ color: ok ? '#16A34A' : '#B45309' }}>
+                        {ok ? '✓ Good' : '! Watch'} · {range}
+                      </p>
+                      <p className="text-2xl font-black leading-none shrink-0" style={{ color: ok ? '#16A34A' : '#B45309' }}>{value}</p>
+                    </>
+                  )}
                 </div>
               </div>
             ))}
@@ -224,10 +250,13 @@ export function SimpleOverview() {
           <div className="bg-white rounded-2xl px-4 pt-3.5 pb-2 mb-4 shadow-sm" style={{ border: '1.5px solid #F1F5F9' }}>
             <div className="flex items-center justify-between mb-1">
               <p className="text-[10px] font-bold text-[#94A3B8] uppercase tracking-wider">7-Day Quality Trend</p>
-              <p className="text-[10px] text-[#CBD5E1]">WQI score</p>
+              {isSensorError
+                ? <div className="flex items-center gap-1"><Wifi className="w-3 h-3 text-red-400" /><p className="text-[10px] text-red-400">Sensor failure periods excluded</p></div>
+                : <p className="text-[10px] text-[#CBD5E1]">WQI score</p>
+              }
             </div>
             <ResponsiveContainer width="100%" height={100}>
-              <AreaChart data={weeklyData} margin={{ top: 4, right: 4, left: -28, bottom: 0 }}>
+              <AreaChart data={validWeeklyData} margin={{ top: 4, right: 4, left: -28, bottom: 0 }}>
                 <defs>
                   <linearGradient id="trendGrad" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="0%" stopColor={wqi.color} stopOpacity={0.2} />

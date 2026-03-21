@@ -80,15 +80,16 @@ class StatusResponse(BaseModel):
 
 class LatestResponse(BaseModel):
     """Response for GET /api/latest — most recent telemetry doc with full breakdown."""
-    timestamp:    str
-    ph:           float | None
-    temperature:  float | None
-    tds:          float | None
-    turbidity:    float | None
-    wqi_score:    float | None
-    anomaly_flag: int
-    mode:         str
-    breakdown:    dict
+    timestamp:     str
+    ph:            float | None
+    temperature:   float | None
+    tds:           float | None
+    turbidity:     float | None
+    wqi_score:     float | None
+    anomaly_flag:  int
+    mode:          str
+    breakdown:     dict
+    sensor_errors: list[str] = []
 
 
 # ── Outbound — history ───────────────────────────────────────────────────────

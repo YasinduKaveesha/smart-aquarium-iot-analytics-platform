@@ -11,7 +11,7 @@ function adaptHistory(records: HistoryRecord[]): SensorReading[] {
     .map(r => ({
       timestamp: r.timestamp,
       temperature: r.temperature ?? 26,
-      pH: r.ph ?? 7.0,        // adapt ph → pH
+      pH: r.ph ?? 0,           // null means sensor failed → 0 (matches useLatest)
       tds: r.tds ?? 300,
       turbidity: r.turbidity ?? 3.0,
       wqi: r.wqi_score ?? 0,  // adapt wqi_score → wqi

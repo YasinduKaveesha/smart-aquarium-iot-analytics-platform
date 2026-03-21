@@ -1,12 +1,14 @@
 import { AdvancedLayout } from '../../components/AdvancedLayout';
 import { fishSpecies, currentReading } from '../../data/mockData';
 import { useLatest } from '../../hooks/useLatest';
-import { AlertTriangle, CheckCircle, Info } from 'lucide-react';
+import { AlertTriangle, CheckCircle, Info, Wifi } from 'lucide-react';
 import { RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis, ResponsiveContainer, Tooltip } from 'recharts';
 
 export function FishHealth() {
-  const { reading: apiReading } = useLatest();
+  const { reading: apiReading, mode: apiMode, sensorErrors } = useLatest();
   const live = apiReading ?? currentReading;
+  const isSensorError = apiMode === 'SENSOR_ERROR';
+  const phFailed = isSensorError && (live.pH === 0 || sensorErrors.some(e => e.toLowerCase().includes('ph')));
 
   const getHealthStatus = (score: number) => {
     if (score >= 80) return { label: 'Excellent', color: '#4CAF50', bg: '#E8F5E9', icon: CheckCircle };
@@ -18,14 +20,15 @@ export function FishHealth() {
   const ranges = fishSpecies.optimalRanges;
 
   const parameters = [
-    { key: 'Temperature', current: live.temperature, min: ranges.temperature.min, max: ranges.temperature.max, unit: '°C',   color: '#E53E3E', inRange: live.temperature >= ranges.temperature.min && live.temperature <= ranges.temperature.max },
-    { key: 'pH',          current: live.pH,          min: ranges.pH.min,          max: ranges.pH.max,          unit: '',     color: '#3182CE', inRange: live.pH >= ranges.pH.min && live.pH <= ranges.pH.max },
-    { key: 'TDS',         current: live.tds,         min: ranges.tds.min,         max: ranges.tds.max,         unit: 'ppm',  color: '#D69E2E', inRange: live.tds >= ranges.tds.min && live.tds <= ranges.tds.max },
-    { key: 'Turbidity',   current: live.turbidity,   min: ranges.turbidity.min,   max: ranges.turbidity.max,   unit: 'NTU',  color: '#805AD5', inRange: live.turbidity <= ranges.turbidity.max },
-    { key: 'Dissolved O₂', current: ranges.dissolvedOxygen.current, min: ranges.dissolvedOxygen.min, max: ranges.dissolvedOxygen.max, unit: 'mg/L', color: '#00ACC1', inRange: ranges.dissolvedOxygen.current >= ranges.dissolvedOxygen.min && ranges.dissolvedOxygen.current <= ranges.dissolvedOxygen.max },
+    { key: 'Temperature', current: live.temperature, min: ranges.temperature.min, max: ranges.temperature.max, unit: '°C',   color: '#E53E3E', inRange: live.temperature >= ranges.temperature.min && live.temperature <= ranges.temperature.max, failed: false },
+    { key: 'pH',          current: live.pH,          min: ranges.pH.min,          max: ranges.pH.max,          unit: '',     color: phFailed ? '#EF4444' : '#3182CE', inRange: phFailed ? false : (live.pH >= ranges.pH.min && live.pH <= ranges.pH.max), failed: phFailed },
+    { key: 'TDS',         current: live.tds,         min: ranges.tds.min,         max: ranges.tds.max,         unit: 'ppm',  color: '#D69E2E', inRange: live.tds >= ranges.tds.min && live.tds <= ranges.tds.max, failed: false },
+    { key: 'Turbidity',   current: live.turbidity,   min: ranges.turbidity.min,   max: ranges.turbidity.max,   unit: 'NTU',  color: '#805AD5', inRange: live.turbidity <= ranges.turbidity.max, failed: false },
+    { key: 'Dissolved O₂', current: ranges.dissolvedOxygen.current, min: ranges.dissolvedOxygen.min, max: ranges.dissolvedOxygen.max, unit: 'mg/L', color: '#00ACC1', inRange: ranges.dissolvedOxygen.current >= ranges.dissolvedOxygen.min && ranges.dissolvedOxygen.current <= ranges.dissolvedOxygen.max, failed: false },
   ];
 
   const stressScore = parameters.reduce((acc, p) => {
+    if (p.failed) return acc;  // exclude failed sensors from stress calculation
     if (!p.inRange) {
       const range = p.max - p.min;
       const deviation = range > 0 ? Math.abs(p.current - (p.min + range / 2)) / (range / 2) : 0;
@@ -36,12 +39,14 @@ export function FishHealth() {
   const healthScore = Math.max(0, Math.round(100 - stressScore));
 
   const radarData = parameters.map(p => {
+    if (p.failed) return { parameter: p.key, score: 0, fullMark: 100 };
     const range = p.max - p.min;
     const score = range > 0 ? Math.max(0, Math.min(100, 100 - Math.abs(p.current - (p.min + range / 2)) / (range / 2) * 100)) : 100;
     return { parameter: p.key, score: Math.round(score), fullMark: 100 };
   });
 
-  const optimalCount = parameters.filter(p => p.inRange).length;
+  const activeParams = parameters.filter(p => !p.failed);
+  const optimalCount = activeParams.filter(p => p.inRange).length;
   const healthStatus = getHealthStatus(healthScore);
   const StatusIcon = healthStatus.icon;
 
@@ -51,6 +56,16 @@ export function FishHealth() {
         <h2 className="text-2xl font-bold text-[#1F4E79] mb-1">Fish Health Analysis</h2>
         <p className="text-[#555]">Species-specific water parameter compatibility for {fishSpecies.name}</p>
       </div>
+
+      {phFailed && (
+        <div className="mb-6 px-4 py-3.5 rounded-2xl flex items-start gap-3" style={{ background: '#FEF2F2', border: '1.5px solid #FECACA' }}>
+          <Wifi className="w-4 h-4 text-red-500 flex-shrink-0 mt-0.5" />
+          <div>
+            <p className="text-sm font-bold text-red-800 mb-0.5">pH Sensor Offline</p>
+            <p className="text-xs text-red-700">pH parameter excluded from health analysis. Score is based on {activeParams.length} active sensors only.</p>
+          </div>
+        </div>
+      )}
 
       {/* Species header */}
       <div className="bg-white rounded-2xl p-6 mb-8 shadow-sm border border-gray-100 flex flex-wrap items-center gap-6">
@@ -66,7 +81,7 @@ export function FishHealth() {
             Neon Tetras are sensitive to water quality changes. They thrive in slightly acidic, soft water with stable parameters.
           </p>
           <div className="flex items-center gap-4 mt-3 text-sm text-[#777]">
-            <span>{optimalCount}/{parameters.length} parameters optimal</span>
+            <span>{optimalCount}/{activeParams.length} parameters optimal{phFailed ? ' (pH excluded)' : ''}</span>
             <span>•</span>
             <span>Stress score: {stressScore}/100</span>
           </div>
@@ -105,6 +120,22 @@ export function FishHealth() {
           <h3 className="font-bold text-[#1F4E79] mb-5">Parameter Details</h3>
           <div className="space-y-4">
             {parameters.map(p => {
+              if (p.failed) {
+                return (
+                  <div key={p.key}>
+                    <div className="flex items-center justify-between mb-1">
+                      <div className="flex items-center gap-2">
+                        <Wifi className="w-3 h-3 text-red-500" />
+                        <span className="text-sm font-semibold text-red-500">{p.key}</span>
+                      </div>
+                      <span className="text-sm font-bold text-red-500">OFFLINE</span>
+                    </div>
+                    <div className="h-2 rounded-full bg-red-50 overflow-hidden">
+                      <div className="h-full rounded-full bg-red-300 animate-pulse" style={{ width: '100%' }} />
+                    </div>
+                  </div>
+                );
+              }
               const normalized = p.max > p.min ? Math.min(Math.max((p.current - p.min) / (p.max - p.min), 0), 1) : 0.5;
               return (
                 <div key={p.key}>
