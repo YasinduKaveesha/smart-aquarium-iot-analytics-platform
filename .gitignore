@@ -1,0 +1,12 @@
+*.joblib
+*.pkl
+*.csv
+__pycache__/
+summary.txt
+plan.txt
+*.pyc
+frontend/node_modules/
+frontend/build/
+frontend/dist/
+backend/.env
+!data/smart_aquarium_dataset_v6.1.csv
