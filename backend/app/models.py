@@ -120,3 +120,19 @@ class AnomalyEvent(BaseModel):
     anomaly_flag: int
     persistence:  int    # number of consecutive anomaly readings in this cluster
     mode:         str | None
+
+
+# ── Chat ────────────────────────────────────────────────────────────────────
+
+class ChatMessage(BaseModel):
+    """One message in the conversation history."""
+    role:         str          # "user" | "assistant" | "system" | "tool"
+    content:      str
+    tool_call_id: str | None = None
+    name:         str | None = None   # tool name, when role == "tool"
+
+
+class ChatRequest(BaseModel):
+    """Body for POST /api/chat."""
+    messages:          list[ChatMessage]
+    dashboard_context: dict | None = None

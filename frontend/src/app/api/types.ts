@@ -81,3 +81,17 @@ export interface ForecastPoint {
   lower: number
   upper: number
 }
+
+// ── Chat ────────────────────────────────────────────────────────────────────
+
+export interface ChatMessage {
+  role: 'user' | 'assistant' | 'system' | 'tool';
+  content: string;
+  tool_call_id?: string;
+  name?: string;
+}
+
+export interface ChatRequest {
+  messages: ChatMessage[];
+  dashboard_context?: Record<string, unknown>;
+}

@@ -36,7 +36,8 @@ export function useHistory(days = 7) {
     }
 
     load();
-    return () => { cancelled = true; };
+    const timer = setInterval(load, 30_000);
+    return () => { cancelled = true; clearInterval(timer); };
   }, [days]);
 
   return { data, loading, error };

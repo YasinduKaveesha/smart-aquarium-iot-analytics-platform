@@ -111,6 +111,7 @@ def create_app() -> FastAPI:
         status    as status_router,
         latest    as latest_router,
         history   as history_router,
+        chat      as chat_router,
     )
 
     application = FastAPI(
@@ -135,6 +136,7 @@ def create_app() -> FastAPI:
     application.include_router(status_router.router,      prefix="/api")
     application.include_router(latest_router.router,      prefix="/api")
     application.include_router(history_router.router,     prefix="/api")
+    application.include_router(chat_router.router,        prefix="/api")
 
     return application
 

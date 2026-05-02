@@ -13,7 +13,7 @@ export interface LatestState {
   error: string | null;
 }
 
-export function useLatest(intervalMs = 30_000): LatestState {
+export function useLatest(intervalMs = 10_000): LatestState {
   const [state, setState] = useState<LatestState>({
     reading: null,
     anomalyFlag: 0,

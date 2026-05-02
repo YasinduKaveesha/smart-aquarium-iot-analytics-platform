@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python backend/seed_demo_data.py)",
+      "Bash(curl -s http://localhost:8000/api/latest)",
+      "Bash(curl -s http://localhost:5173)",
+      "Bash(python replay_sensor.py --rows 100 --speed 60)",
+      "Bash(pip install:*)",
+      "Bash(curl -s http://localhost:8000/docs)",
+      "Bash(npm install:*)"
+    ]
+  }
+}
