@@ -27,7 +27,7 @@ import asyncio
 
 async def run_pipeline(
     pipeline_router,
-    ph:          float,
+    ph:          float | None,
     temperature: float,
     tds:         float,
     turbidity:   float,

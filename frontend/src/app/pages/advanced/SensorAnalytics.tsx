@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { AdvancedLayout } from '../../components/AdvancedLayout';
 import { sensorData } from '../../data/mockData';
+import { useLatest } from '../../hooks/useLatest';
 import { useHistory } from '../../hooks/useHistory';
-import { Thermometer, Droplets, Zap, Eye } from 'lucide-react';
+import { Thermometer, Droplets, Zap, Eye, Wifi } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, Brush } from 'recharts';
 
 type SensorKey = 'temperature' | 'pH' | 'tds' | 'turbidity';
@@ -17,10 +18,15 @@ const sensors: { key: SensorKey; label: string; unit: string; color: string; ico
 export function SensorAnalytics() {
   const [selectedSensor, setSelectedSensor] = useState<SensorKey>('temperature');
   const [timeRange, setTimeRange] = useState<'24h' | '48h' | '7d'>('24h');
+  const { mode: apiMode, sensorErrors } = useLatest();
   const { data: historyData } = useHistory();
 
+  const isSensorError = apiMode === 'SENSOR_ERROR';
+  const phFailed = isSensorError && sensorErrors.some(e => e.toLowerCase().includes('ph'));
+
   const histData = historyData ?? sensorData;
-  const sensor   = sensors.find(s => s.key === selectedSensor)!;
+  const effectiveSensor = (selectedSensor === 'pH' && phFailed) ? 'temperature' : selectedSensor;
+  const sensor   = sensors.find(s => s.key === effectiveSensor)!;
 
   const rangeMap = { '24h': 24, '48h': 48, '7d': 168 };
   const points   = rangeMap[timeRange];
@@ -30,13 +36,13 @@ export function SensorAnalytics() {
     time: timeRange === '7d'
       ? new Date(d.timestamp).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
       : new Date(d.timestamp).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
-    value: d[selectedSensor],
+    value: d[effectiveSensor],
     min: sensor.min,
     max: sensor.max,
   }));
 
-  const current  = histData[histData.length - 1][selectedSensor];
-  const prev24   = histData[histData.length - 25]?.[selectedSensor] ?? current;
+  const current  = histData[histData.length - 1][effectiveSensor];
+  const prev24   = histData[histData.length - 25]?.[effectiveSensor] ?? current;
   const change   = ((current - prev24) / prev24 * 100).toFixed(1);
   const isInRange = current >= sensor.min && current <= sensor.max;
 
@@ -51,18 +57,22 @@ export function SensorAnalytics() {
         {sensors.map((s) => {
           const Icon = s.icon;
           const val  = histData[histData.length - 1][s.key];
-          const ok   = val >= s.min && val <= s.max;
+          const isFailed = s.key === 'pH' && phFailed;
+          const ok   = isFailed ? false : (val >= s.min && val <= s.max);
           const active = selectedSensor === s.key;
           return (
-            <button key={s.key} onClick={() => setSelectedSensor(s.key)} className="p-5 rounded-2xl text-left transition-all duration-200 hover:shadow-md" style={{ border: active ? `2px solid ${s.color}` : '2px solid transparent', background: active ? `${s.color}10` : 'white', boxShadow: active ? `0 0 0 4px ${s.color}15` : '0 1px 3px rgba(0,0,0,0.06)' }}>
+            <button key={s.key} onClick={() => !isFailed && setSelectedSensor(s.key)} className={`p-5 rounded-2xl text-left transition-all duration-200 ${isFailed ? 'opacity-75 cursor-not-allowed' : 'hover:shadow-md'}`} style={{ border: isFailed ? '2px solid #FECACA' : active ? `2px solid ${s.color}` : '2px solid transparent', background: isFailed ? '#FEF2F2' : active ? `${s.color}10` : 'white', boxShadow: active && !isFailed ? `0 0 0 4px ${s.color}15` : '0 1px 3px rgba(0,0,0,0.06)' }}>
               <div className="flex items-center justify-between mb-3">
-                <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ backgroundColor: `${s.color}15` }}>
-                  <Icon className="w-5 h-5" style={{ color: s.color }} />
+                <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ backgroundColor: isFailed ? '#FEE2E2' : `${s.color}15` }}>
+                  <Icon className="w-5 h-5" style={{ color: isFailed ? '#EF4444' : s.color }} />
                 </div>
-                <div className="w-2 h-2 rounded-full" style={{ backgroundColor: ok ? '#4CAF50' : '#FF9800' }} />
+                {isFailed ? <Wifi className="w-4 h-4 text-red-500" /> : <div className="w-2 h-2 rounded-full" style={{ backgroundColor: ok ? '#4CAF50' : '#FF9800' }} />}
               </div>
-              <p className="text-xs text-[#777] font-medium mb-0.5">{s.label}</p>
-              <p className="text-xl font-black" style={{ color: s.color }}>{val.toFixed(s.key === 'tds' ? 0 : 1)}<span className="text-xs font-normal text-[#999] ml-0.5">{s.unit}</span></p>
+              <p className="text-xs font-medium mb-0.5" style={{ color: isFailed ? '#EF4444' : '#777' }}>{s.label}</p>
+              {isFailed
+                ? <p className="text-xl font-black text-red-500">FAULT</p>
+                : <p className="text-xl font-black" style={{ color: s.color }}>{val.toFixed(s.key === 'tds' ? 0 : 1)}<span className="text-xs font-normal text-[#999] ml-0.5">{s.unit}</span></p>
+              }
             </button>
           );
         })}

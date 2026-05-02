@@ -10,6 +10,7 @@ export interface LatestResponse {
   anomaly_flag: number
   mode: string
   breakdown: Record<string, number>
+  sensor_errors?: string[]
 }
 
 export interface StatusResponse {
@@ -79,4 +80,18 @@ export interface ForecastPoint {
   mean: number
   lower: number
   upper: number
+}
+
+// ── Chat ────────────────────────────────────────────────────────────────────
+
+export interface ChatMessage {
+  role: 'user' | 'assistant' | 'system' | 'tool';
+  content: string;
+  tool_call_id?: string;
+  name?: string;
+}
+
+export interface ChatRequest {
+  messages: ChatMessage[];
+  dashboard_context?: Record<string, unknown>;
 }

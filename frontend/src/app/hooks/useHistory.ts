@@ -11,7 +11,7 @@ function adaptHistory(records: HistoryRecord[]): SensorReading[] {
     .map(r => ({
       timestamp: r.timestamp,
       temperature: r.temperature ?? 26,
-      pH: r.ph ?? 7.0,        // adapt ph → pH
+      pH: r.ph ?? 0,           // null means sensor failed → 0 (matches useLatest)
       tds: r.tds ?? 300,
       turbidity: r.turbidity ?? 3.0,
       wqi: r.wqi_score ?? 0,  // adapt wqi_score → wqi
@@ -36,7 +36,8 @@ export function useHistory(days = 7) {
     }
 
     load();
-    return () => { cancelled = true; };
+    const timer = setInterval(load, 30_000);
+    return () => { cancelled = true; clearInterval(timer); };
   }, [days]);
 
   return { data, loading, error };

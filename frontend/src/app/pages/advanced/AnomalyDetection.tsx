@@ -1,25 +1,31 @@
 import { AdvancedLayout } from '../../components/AdvancedLayout';
 import { anomalyEvents, sensorData } from '../../data/mockData';
+import { useLatest } from '../../hooks/useLatest';
 import { useHistory } from '../../hooks/useHistory';
 import { useAnomalies } from '../../hooks/useAnomalies';
-import { AlertTriangle, Activity, Clock, TrendingUp } from 'lucide-react';
+import { AlertTriangle, Activity, Clock, TrendingUp, Wifi } from 'lucide-react';
 import { ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, LineChart, Line, ReferenceLine } from 'recharts';
 
 // Deterministic score derived from sensor deviations — replaces Math.random() bug
 function deriveAnomalyScore(pH: number, tds: number, turbidity: number, temperature: number): number {
-  const phDev   = Math.abs(pH - 7.0) / 0.5;
-  const tdsDev  = Math.max(0, (tds - 300) / 80);
-  const turbDev = Math.max(0, (turbidity - 3) / 2);
-  const tempDev = Math.abs(temperature - 26) / 2;
-  return Math.min(0.95, 0.08 + Math.max(phDev, tdsDev, turbDev, tempDev) * 0.55);
+  const devs: number[] = [];
+  if (pH !== 0) devs.push(Math.abs(pH - 7.0) / 0.5);  // skip failed pH sensor (pH=0)
+  devs.push(Math.max(0, (tds - 300) / 80));
+  devs.push(Math.max(0, (turbidity - 3) / 2));
+  devs.push(Math.abs(temperature - 26) / 2);
+  return Math.min(0.95, 0.08 + Math.max(...devs) * 0.55);
 }
 
 const severityColors = { high: '#F44336', medium: '#FF9800', low: '#2196F3' };
 const getSeverity    = (score: number) => score >= 0.8 ? 'high' : score >= 0.6 ? 'medium' : 'low';
 
 export function AnomalyDetection() {
+  const { mode: apiMode, sensorErrors } = useLatest();
   const { data: historyData } = useHistory();
   const { data: apiAnomalies } = useAnomalies();
+
+  const isSensorError = apiMode === 'SENSOR_ERROR';
+  const phFailed = isSensorError && sensorErrors.some(e => e.toLowerCase().includes('ph'));
 
   const histData    = historyData ?? sensorData;
   const liveEvents  = apiAnomalies ?? anomalyEvents;
@@ -49,10 +55,10 @@ export function AnomalyDetection() {
   const maxCount = Math.max(1, ...Object.values(paramCounts));
 
   const paramFreq = [
-    { param: 'TDS',         color: '#D69E2E', description: 'Most frequent anomaly source' },
-    { param: 'pH',          color: '#3182CE', description: 'Moderate fluctuations' },
-    { param: 'Turbidity',   color: '#805AD5', description: 'Filter-related events' },
-    { param: 'Temperature', color: '#E53E3E', description: 'Thermal anomalies' },
+    { param: 'TDS',         color: '#D69E2E', description: 'Most frequent anomaly source', failed: false },
+    { param: 'pH',          color: phFailed ? '#EF4444' : '#3182CE', description: phFailed ? 'Sensor offline — excluded from detection' : 'Moderate fluctuations', failed: phFailed },
+    { param: 'Turbidity',   color: '#805AD5', description: 'Filter-related events', failed: false },
+    { param: 'Temperature', color: '#E53E3E', description: 'Thermal anomalies', failed: false },
   ].map(p => ({ ...p, count: paramCounts[p.param] ?? 0 }));
 
   return (
@@ -61,6 +67,16 @@ export function AnomalyDetection() {
         <h2 className="text-2xl font-bold text-[#1F4E79] mb-1">Anomaly Detection</h2>
         <p className="text-[#555]">Statistical anomaly detection using Isolation Forest algorithm</p>
       </div>
+
+      {phFailed && (
+        <div className="mb-6 px-4 py-3.5 rounded-2xl flex items-start gap-3" style={{ background: '#FEF2F2', border: '1.5px solid #FECACA' }}>
+          <Wifi className="w-4 h-4 text-red-500 flex-shrink-0 mt-0.5" />
+          <div>
+            <p className="text-sm font-bold text-red-800 mb-0.5">pH Sensor Offline</p>
+            <p className="text-xs text-red-700">pH data excluded from anomaly score calculations. Anomaly detection continues using temperature, TDS, and turbidity.</p>
+          </div>
+        </div>
+      )}
 
       {/* Stats */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-5 mb-8">
@@ -129,10 +145,10 @@ export function AnomalyDetection() {
         <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
           <h3 className="font-bold text-[#1F4E79] mb-4">Parameter Anomaly Frequency</h3>
           <div className="space-y-3">
-            {paramFreq.map(({ param, count, color, description }) => (
+            {paramFreq.map(({ param, count, color, description, failed }) => (
               <div key={param} className="flex items-center gap-3">
                 <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0" style={{ backgroundColor: `${color}15` }}>
-                  <TrendingUp className="w-4 h-4" style={{ color }} />
+                  {failed ? <Wifi className="w-4 h-4" style={{ color }} /> : <TrendingUp className="w-4 h-4" style={{ color }} />}
                 </div>
                 <div className="flex-1">
                   <div className="flex items-center justify-between mb-0.5">

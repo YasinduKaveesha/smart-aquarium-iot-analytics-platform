@@ -1,8 +1,22 @@
 import { useNavigate } from 'react-router';
-import { Droplets, Zap, Shield, BarChart3, Brain, AlertTriangle } from 'lucide-react';
+import { Droplets, Zap, Shield, BarChart3, Brain, AlertTriangle, Wifi } from 'lucide-react';
+import { useLatest } from '../hooks/useLatest';
+import { useAnomalies } from '../hooks/useAnomalies';
+import { useStatus } from '../hooks/useStatus';
 
 export function ModeSelector() {
   const navigate = useNavigate();
+  const { reading, mode: apiMode, sensorErrors } = useLatest();
+  const { data: anomalyData } = useAnomalies();
+  const { data: statusData } = useStatus();
+
+  const isSensorError = apiMode === 'SENSOR_ERROR';
+  const phFailed = isSensorError && ((reading?.pH === 0) || sensorErrors.some(e => e.toLowerCase().includes('ph')));
+  const activeSensors = phFailed ? 3 : 4;
+  const anomalyCount = anomalyData?.length ?? 0;
+  const daysMonitored = statusData
+    ? Math.floor((Date.now() - new Date(statusData.install_date).getTime()) / 86400000)
+    : 7;
 
   return (
     <div className="min-h-screen flex items-center justify-center relative overflow-hidden" style={{ background: 'linear-gradient(135deg, #0F2940 0%, #1A3D5C 40%, #1E4976 70%, #0D3B6E 100%)' }}>
@@ -106,14 +120,14 @@ export function ModeSelector() {
         {/* Stats row */}
         <div className="grid grid-cols-3 gap-4 max-w-lg mx-auto">
           {[
-            { icon: Droplets, label: 'Sensors Active', value: '4' },
-            { icon: AlertTriangle, label: 'Anomalies Detected', value: '3' },
-            { icon: BarChart3, label: 'Days Monitored', value: '7' },
-          ].map(({ icon: Icon, label, value }) => (
-            <div key={label} className="rounded-2xl px-4 py-4 text-center" style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)' }}>
-              <Icon className="w-5 h-5 text-blue-300 mx-auto mb-2" />
-              <p className="text-2xl font-bold text-white">{value}</p>
-              <p className="text-xs text-blue-300 mt-0.5">{label}</p>
+            { icon: phFailed ? Wifi : Droplets, label: phFailed ? 'Sensors (1 fault)' : 'Sensors Active', value: String(activeSensors), warn: phFailed },
+            { icon: AlertTriangle, label: 'Anomalies Detected', value: String(anomalyCount), warn: false },
+            { icon: BarChart3, label: 'Days Monitored', value: String(daysMonitored), warn: false },
+          ].map(({ icon: Icon, label, value, warn }) => (
+            <div key={label} className="rounded-2xl px-4 py-4 text-center" style={{ background: warn ? 'rgba(239,68,68,0.08)' : 'rgba(255,255,255,0.05)', border: `1px solid ${warn ? 'rgba(239,68,68,0.2)' : 'rgba(255,255,255,0.08)'}` }}>
+              <Icon className="w-5 h-5 mx-auto mb-2" style={{ color: warn ? '#F87171' : '#93C5FD' }} />
+              <p className="text-2xl font-bold" style={{ color: warn ? '#FCA5A5' : 'white' }}>{value}</p>
+              <p className="text-xs mt-0.5" style={{ color: warn ? '#F87171' : '#93C5FD' }}>{label}</p>
             </div>
           ))}
         </div>

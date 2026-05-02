@@ -87,6 +87,39 @@ async def update_last_mode(db: AsyncIOMotorDatabase, mode: str) -> None:
     )
 
 
+# ── Normalize raw ESP32 docs to enriched format ─────────────────────────────
+
+def normalize_telemetry_doc(doc: dict[str, Any]) -> dict[str, Any]:
+    """
+    Normalize a telemetry document to the enriched format.
+    Handles both:
+      - Enriched docs (from backend ML pipeline): have 'timestamp', 'temperature', etc.
+      - Raw ESP32 docs (from mqtt_to_mongo.py): have 'server_time', 'temperature_c', etc.
+    """
+    if "timestamp" in doc:
+        return doc  # already enriched format
+
+    # Raw ESP32 format — map fields
+    server_time = doc.get("server_time")
+    # Ensure timezone-aware
+    if server_time and isinstance(server_time, datetime) and server_time.tzinfo is None:
+        server_time = server_time.replace(tzinfo=timezone.utc)
+
+    return {
+        "_id":           doc.get("_id"),
+        "timestamp":     server_time,
+        "ph":            None,
+        "temperature":   doc.get("temperature_c"),
+        "tds":           doc.get("tds_ppm", 0),
+        "turbidity":     doc.get("turbidity_ntu", doc.get("turbidity_voltage", 0)),
+        "wqi_score":     None,
+        "anomaly_flag":  0,
+        "mode":          "SENSOR_ERROR",
+        "sensor_errors": ["pH sensor not connected — no data received"],
+        "breakdown":     {},
+    }
+
+
 # ── telemetry helpers ────────────────────────────────────────────────────────
 
 async def insert_telemetry(db: AsyncIOMotorDatabase, doc: dict[str, Any]) -> str:
@@ -100,11 +133,36 @@ async def insert_telemetry(db: AsyncIOMotorDatabase, doc: dict[str, Any]) -> str
 
 
 async def fetch_latest(db: AsyncIOMotorDatabase) -> dict[str, Any] | None:
-    """Return the single most recent telemetry document, or None if empty."""
+    """Return the single most recent telemetry document, or None if empty.
+    Checks both enriched docs (timestamp) and raw ESP32 docs (server_time)."""
+    # Try enriched docs first (have ML pipeline output)
     doc = await db.telemetry.find_one(
-        {},
+        {"timestamp": {"$exists": True}},
         sort=[("timestamp", DESCENDING)],
     )
+    # Also check raw ESP32 docs
+    raw_doc = await db.telemetry.find_one(
+        {"server_time": {"$exists": True}, "timestamp": {"$exists": False}},
+        sort=[("server_time", DESCENDING)],
+    )
+
+    if doc is None and raw_doc is None:
+        return None
+
+    # Pick the most recent between enriched and raw
+    if doc is not None and raw_doc is not None:
+        enriched_ts = doc.get("timestamp")
+        raw_ts = raw_doc.get("server_time")
+        if enriched_ts and raw_ts:
+            if enriched_ts.tzinfo is None:
+                enriched_ts = enriched_ts.replace(tzinfo=timezone.utc)
+            if raw_ts.tzinfo is None:
+                raw_ts = raw_ts.replace(tzinfo=timezone.utc)
+            if raw_ts > enriched_ts:
+                return normalize_telemetry_doc(raw_doc)
+        return doc
+    if raw_doc is not None:
+        return normalize_telemetry_doc(raw_doc)
     return doc
 
 
@@ -114,14 +172,39 @@ async def fetch_history(
 ) -> list[dict[str, Any]]:
     """
     Return telemetry rows from the last `days` days, ordered ASC.
-    Used by /api/history for time-series charts.
+    Handles both enriched docs (timestamp) and raw ESP32 docs (server_time).
     """
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-    cursor = db.telemetry.find(
+
+    # Fetch enriched docs
+    cursor_enriched = db.telemetry.find(
         {"timestamp": {"$gte": cutoff}},
         sort=[("timestamp", ASCENDING)],
     )
-    return await cursor.to_list(length=None)
+    enriched = await cursor_enriched.to_list(length=None)
+
+    # Fetch raw ESP32 docs
+    cursor_raw = db.telemetry.find(
+        {"server_time": {"$gte": cutoff}, "timestamp": {"$exists": False}},
+        sort=[("server_time", ASCENDING)],
+    )
+    raw = await cursor_raw.to_list(length=None)
+
+    # Normalize raw docs and merge
+    normalized_raw = [normalize_telemetry_doc(r) for r in raw]
+    all_docs = enriched + normalized_raw
+
+    # Sort by timestamp
+    def get_ts(d: dict) -> datetime:
+        ts = d.get("timestamp")
+        if ts is None:
+            return datetime.min.replace(tzinfo=timezone.utc)
+        if ts.tzinfo is None:
+            return ts.replace(tzinfo=timezone.utc)
+        return ts
+
+    all_docs.sort(key=get_ts)
+    return all_docs
 
 
 async def fetch_anomalies(
@@ -134,7 +217,7 @@ async def fetch_anomalies(
     Fetches more than the UI limit so clustering can group correctly.
     """
     cursor = db.telemetry.find(
-        {"anomaly_flag": 1},
+        {"anomaly_flag": 1, "timestamp": {"$exists": True}},
         sort=[("timestamp", ASCENDING)],
         limit=limit,
     )

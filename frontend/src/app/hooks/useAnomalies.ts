@@ -61,7 +61,8 @@ export function useAnomalies() {
     }
 
     load();
-    return () => { cancelled = true; };
+    const timer = setInterval(load, 30_000);
+    return () => { cancelled = true; clearInterval(timer); };
   }, []);
 
   return { data, loading, error };

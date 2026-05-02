@@ -47,7 +47,7 @@ WQI = (pH × 0.35) + (TDS × 0.35) + (Turbidity × 0.20) + (Temperature × 0.10)
 ```
 
 | WQI | Condition |
-|---|---|
+|-----|-----------|
 | 85–100 | Excellent |
 | 70–84 | Good |
 | 50–69 | Fair |

@@ -62,7 +62,7 @@ def build_mqtt_client(
     def on_message(client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage) -> None:
         try:
             payload = json.loads(msg.payload.decode("utf-8"))
-            ph          = float(payload["ph"])
+            ph          = float(payload["ph"]) if payload.get("ph") is not None else None
             temperature = float(payload["temperature"])
             tds         = float(payload["tds"])
             turbidity   = float(payload["turbidity"])
@@ -87,7 +87,7 @@ def build_mqtt_client(
 
 async def _process_reading(
     app_state: Any,
-    ph:          float,
+    ph:          float | None,
     temperature: float,
     tds:         float,
     turbidity:   float,
@@ -107,7 +107,7 @@ async def _process_reading(
     Returns the inserted telemetry document dict (with authoritative timestamp).
     """
     # ── Pre-validate sensor ranges ────────────────────────────────────────────
-    if not (0.0 <= ph <= 14.0):
+    if ph is not None and not (0.0 <= ph <= 14.0):
         raise ValueError(f"pH out of physical range: {ph}")
     if not (0.0 <= temperature <= 50.0):
         raise ValueError(f"temperature out of range: {temperature}")
@@ -173,7 +173,7 @@ async def _process_reading(
 # ── Helper ───────────────────────────────────────────────────────────────────
 
 def _build_doc(
-    ph:           float,
+    ph:           float | None,
     temperature:  float,
     tds:          float,
     turbidity:    float,

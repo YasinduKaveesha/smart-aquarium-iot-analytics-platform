@@ -1,0 +1,1034 @@
+# Chatbot Implementation Spec — AquaGuard
+
+> **Audience:** AI coding agent (Claude Code / Cursor / Copilot Workspace)
+> **Goal:** Add an LLM-powered conversational analytics agent to the existing AquaGuard FastAPI + React app, satisfying Assignment 02 requirement #5.
+> **LLM:** **Local Ollama** running `gemma4:e4b` (8B params, native tool-calling, 131K context). No API key, no internet calls during runtime.
+> **Estimated effort:** ~5 hours for a competent AI agent.
+
+---
+
+## 0. Pre-flight checklist (verify before starting)
+
+The agent MUST verify these before writing code. If any fail, STOP and report:
+
+```bash
+# 1. Conda env active
+conda activate aquarium
+python -c "import fastapi, motor, sklearn, statsmodels, paho.mqtt.client, httpx; print('OK')"
+
+# 2. Ollama is running and gemma4:e4b is available
+curl -s http://localhost:11434/api/tags
+# Expected: JSON containing "name":"gemma4:e4b"
+
+# 3. Backend currently runs cleanly
+cd backend && python -m uvicorn app.main:app --reload --port 8000
+# Expected: "[STARTUP] MongoDB connected", "[STARTUP] Pipeline router ready", "[STARTUP] Dry-run OK"
+
+# 4. Frontend runs
+cd frontend && npm run dev
+# Expected: Vite dev server on http://localhost:5173
+
+# 5. Ollama tool-calling smoke test
+python -c "
+import httpx, json
+r = httpx.post('http://localhost:11434/v1/chat/completions', json={
+  'model': 'gemma4:e4b',
+  'messages': [{'role':'user','content':'What is 2+2? Reply with just the number.'}],
+  'stream': False,
+}, timeout=60)
+print(r.json()['choices'][0]['message']['content'])
+"
+# Expected: "4" (or similar)
+```
+
+---
+
+## 1. Architecture
+
+```
+User types in ChatPanel (frontend)
+        │
+        ▼
+POST /api/chat  { messages, dashboard_context? }   ← SSE streaming response
+        │
+        ▼
+Backend: ollama_client.run_chat_loop()
+        │
+        ├── 1. Send messages + tool definitions to Ollama
+        │       POST http://localhost:11434/v1/chat/completions
+        │
+        ├── 2. If LLM returns tool_calls:
+        │       a. Execute each tool via chat_tools.dispatch()
+        │       b. Tools call existing FastAPI endpoints internally (in-process)
+        │       c. Append tool results to messages
+        │       d. Loop back to step 1 (max 4 iterations)
+        │
+        └── 3. Stream final assistant text back to client (SSE)
+```
+
+### Why this design
+- **Local LLM, native tool-calling** — Gemma 4 `e4b` exposes `tools` capability via Ollama's OpenAI-compatible endpoint. No JSON-shim required.
+- **Tools call existing endpoints** — zero duplication of business logic. The chatbot is a thin overlay on the same data the dashboard uses, so answers are always consistent with what the user sees.
+- **Streaming** — keeps the UI responsive during 2–8s LLM latency.
+- **Hard tool-call cap (4)** — prevents runaway loops if Gemma hallucinates tool chains.
+
+---
+
+## 2. Files to create / modify
+
+| # | File | Action | LOC est. |
+|---|---|---|---|
+| 1 | `backend/app/services/chat_tools.py` | CREATE | ~250 |
+| 2 | `backend/app/services/ollama_client.py` | CREATE | ~180 |
+| 3 | `backend/app/routers/chat.py` | CREATE | ~80 |
+| 4 | `backend/app/models.py` | EDIT (append) | +25 |
+| 5 | `backend/app/main.py` | EDIT (1 line) | +1 |
+| 6 | `backend/app/config.py` | EDIT (append fields) | +5 |
+| 7 | `backend/.env` | EDIT (append) | +3 |
+| 8 | `frontend/src/app/api/types.ts` | EDIT (append) | +15 |
+| 9 | `frontend/src/app/hooks/useChat.ts` | CREATE | ~120 |
+| 10 | `frontend/src/app/components/ChatPanel.tsx` | CREATE | ~250 |
+| 11 | `frontend/src/app/App.tsx` | EDIT (mount panel) | +5 |
+
+---
+
+## 3. Detailed file specs
+
+### 3.1 `backend/app/config.py` — append these fields
+
+Inside `class Settings(BaseSettings):` (anywhere in the body):
+
+```python
+    # ── Chatbot (Ollama) ─────────────────────────────────────────────────────
+    OLLAMA_URL:           str = "http://localhost:11434"
+    OLLAMA_MODEL:         str = "gemma4:e4b"
+    OLLAMA_TIMEOUT_SEC:   int = 120
+    CHAT_MAX_TOOL_ROUNDS: int = 4
+```
+
+### 3.2 `backend/.env` — append
+
+```env
+# ── Chatbot ──
+OLLAMA_URL=http://localhost:11434
+OLLAMA_MODEL=gemma4:e4b
+OLLAMA_TIMEOUT_SEC=120
+```
+
+### 3.3 `backend/app/models.py` — append
+
+```python
+# ── Chat ────────────────────────────────────────────────────────────────────
+
+class ChatMessage(BaseModel):
+    """One message in the conversation history."""
+    role:    str          # "user" | "assistant" | "system" | "tool"
+    content: str
+    # tool_call_id only set when role == "tool"
+    tool_call_id: str | None = None
+    name:         str | None = None   # tool name, when role == "tool"
+
+
+class ChatRequest(BaseModel):
+    """Body for POST /api/chat."""
+    messages: list[ChatMessage]
+    # Optional context the frontend can inject: which page the user is on,
+    # which sensor they are looking at, etc. Becomes part of the system prompt.
+    dashboard_context: dict | None = None
+```
+
+### 3.4 `backend/app/services/chat_tools.py` — full file
+
+```python
+"""
+chat_tools.py — Tool definitions for the LLM agent
+====================================================
+Each tool is a thin async function that calls the SAME helpers used by the
+existing FastAPI endpoints (database.py + pipeline_router). This guarantees
+the chatbot's answers are always consistent with the dashboard.
+
+Adding a new tool:
+  1. Write an async function `tool_<name>(db, pipeline_router, **params)`
+  2. Add its JSON schema to TOOL_SCHEMAS (OpenAI format)
+  3. Register it in DISPATCH
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from statistics import mean, median, stdev
+from typing import Any
+
+from motor.motor_asyncio import AsyncIOMotorDatabase
+
+from app.database import (
+    fetch_anomalies,
+    fetch_history,
+    fetch_latest,
+    fetch_system_state,
+)
+from app.services.forecast_cache import get_forecast
+
+
+# ── Tool implementations ─────────────────────────────────────────────────────
+
+async def tool_get_latest_reading(db: AsyncIOMotorDatabase, **_) -> dict[str, Any]:
+    doc = await fetch_latest(db)
+    if doc is None:
+        return {"error": "No telemetry recorded yet."}
+    return {
+        "timestamp":     doc["timestamp"].isoformat() if hasattr(doc.get("timestamp"), "isoformat") else str(doc.get("timestamp")),
+        "ph":            doc.get("ph"),
+        "temperature":   doc.get("temperature"),
+        "tds":           doc.get("tds"),
+        "turbidity":     doc.get("turbidity"),
+        "wqi_score":     doc.get("wqi_score"),
+        "anomaly_flag":  doc.get("anomaly_flag"),
+        "mode":          doc.get("mode"),
+        "sensor_errors": doc.get("sensor_errors") or [],
+    }
+
+
+async def tool_get_history(
+    db: AsyncIOMotorDatabase,
+    days: int = 1,
+    parameter: str = "all",
+    **_,
+) -> dict[str, Any]:
+    """
+    Return summary stats + downsampled series for one parameter (or all).
+    parameter ∈ {"ph","temperature","tds","turbidity","wqi_score","all"}
+    days ∈ [1, 30]
+    """
+    days = max(1, min(int(days), 30))
+    rows = await fetch_history(db, days=days)
+    if not rows:
+        return {"error": "No history available."}
+
+    keys = ["ph", "temperature", "tds", "turbidity", "wqi_score"] if parameter == "all" else [parameter]
+    out: dict[str, Any] = {"days": days, "row_count": len(rows), "parameters": {}}
+
+    for k in keys:
+        values = [r.get(k) for r in rows if r.get(k) is not None]
+        if not values:
+            out["parameters"][k] = {"available": False}
+            continue
+        out["parameters"][k] = {
+            "available": True,
+            "min":  round(min(values), 3),
+            "max":  round(max(values), 3),
+            "mean": round(mean(values), 3),
+            "median": round(median(values), 3),
+            "std":  round(stdev(values), 3) if len(values) > 1 else 0.0,
+            "first": round(values[0], 3),
+            "last":  round(values[-1], 3),
+            "trend": "rising" if values[-1] > values[0] else ("falling" if values[-1] < values[0] else "flat"),
+        }
+    return out
+
+
+async def tool_get_forecast(_db: AsyncIOMotorDatabase, pipeline_router, **__) -> dict[str, Any]:
+    data = await get_forecast(pipeline_router.forecaster)
+    # Summarise — full 24-point arrays would blow up the prompt
+    def _summarise(name: str, arr: list[dict]) -> dict:
+        if not arr:
+            return {"available": False}
+        means  = [p["mean"]  for p in arr]
+        lowers = [p["lower"] for p in arr]
+        uppers = [p["upper"] for p in arr]
+        return {
+            "available": True,
+            "horizon_hours": len(arr),
+            "mean_min": round(min(means), 3),
+            "mean_max": round(max(means), 3),
+            "lower_ci_min": round(min(lowers), 3),
+            "upper_ci_max": round(max(uppers), 3),
+            "first_hour": arr[0],
+            "last_hour":  arr[-1],
+        }
+    return {
+        "ph":   _summarise("ph",   data.get("ph_forecast", [])),
+        "temp": _summarise("temp", data.get("temp_forecast", [])),
+        "note": "pH lower CI = pessimistic acid-crash bound. Temp upper CI = pessimistic overheating bound.",
+    }
+
+
+async def tool_get_anomalies(db: AsyncIOMotorDatabase, limit: int = 10, **_) -> dict[str, Any]:
+    limit = max(1, min(int(limit), 50))
+    rows = await fetch_anomalies(db, limit=limit * 5)
+    # Cluster (same logic as routers/history.py — keep simple here)
+    out = []
+    for r in rows[:limit]:
+        out.append({
+            "timestamp":   r["timestamp"].isoformat() if hasattr(r.get("timestamp"), "isoformat") else str(r.get("timestamp")),
+            "ph":          r.get("ph"),
+            "temperature": r.get("temperature"),
+            "tds":         r.get("tds"),
+            "turbidity":   r.get("turbidity"),
+            "wqi_score":   r.get("wqi_score"),
+        })
+    return {"count": len(out), "events": out}
+
+
+async def tool_get_status(db: AsyncIOMotorDatabase, pipeline_router, **_) -> dict[str, Any]:
+    state = await fetch_system_state(db)
+    latest = await fetch_latest(db)
+    days_left = pipeline_router._days_until_adaptive()
+    install_date_str = str(state.get("install_date", ""))
+    days_since_install = None
+    try:
+        install = datetime.fromisoformat(install_date_str)
+        if install.tzinfo is None:
+            install = install.replace(tzinfo=timezone.utc)
+        days_since_install = (datetime.now(timezone.utc) - install).days
+    except Exception:
+        pass
+    return {
+        "mode": "ADAPTIVE" if days_left == 0 else "COLD_START",
+        "days_until_adaptive": days_left,
+        "install_date": install_date_str,
+        "days_since_install": days_since_install,
+        "maintenance_active": bool(state.get("maintenance_active", False)),
+        "stabilizing_until":  state.get("stabilizing_until"),
+        "latest_wqi":         latest.get("wqi_score") if latest else None,
+        "latest_anomaly_flag": int(latest.get("anomaly_flag") or 0) if latest else 0,
+    }
+
+
+async def tool_explain_wqi(db: AsyncIOMotorDatabase, **_) -> dict[str, Any]:
+    """Break down the WQI formula with the latest reading's component scores."""
+    doc = await fetch_latest(db)
+    if doc is None:
+        return {"error": "No telemetry recorded yet."}
+    return {
+        "formula":   "WQI = (pH × 0.35) + (TDS × 0.35) + (Turbidity × 0.20) + (Temperature × 0.10)",
+        "weights":   {"ph": 0.35, "tds": 0.35, "turbidity": 0.20, "temperature": 0.10},
+        "current_breakdown": doc.get("breakdown") or {},
+        "current_wqi":   doc.get("wqi_score"),
+        "current_mode":  doc.get("mode"),
+        "anomaly_flag":  doc.get("anomaly_flag"),
+        "ideal_ranges": {
+            "ph":          "6.0 – 7.0 (Neon Tetra)",
+            "temperature": "22 – 26 °C",
+            "tds":         "50 – 150 ppm",
+            "turbidity":   "0 – 5 NTU",
+        },
+        "wqi_bands": {
+            "85-100": "Excellent",
+            "70-84":  "Good",
+            "50-69":  "Fair",
+            "30-49":  "Poor",
+            "0-29":   "Critical",
+        },
+    }
+
+
+# ── OpenAI-format tool schemas (sent to Ollama) ──────────────────────────────
+
+TOOL_SCHEMAS: list[dict[str, Any]] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_latest_reading",
+            "description": "Get the most recent sensor reading (pH, temperature, TDS, turbidity) and computed WQI score. Use this when the user asks about current state, 'right now', 'what is my pH', etc.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_history",
+            "description": "Get summary statistics (min, max, mean, median, std, trend) for sensor readings over the last N days. Use for trend questions, comparisons, 'this week', 'past 24 hours'.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "days": {"type": "integer", "description": "Lookback window in days (1-30). Default 1.", "minimum": 1, "maximum": 30},
+                    "parameter": {"type": "string", "enum": ["ph", "temperature", "tds", "turbidity", "wqi_score", "all"], "description": "Which sensor to summarise. Use 'all' to compare every parameter."},
+                },
+                "required": ["days", "parameter"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_forecast",
+            "description": "Get the 24-hour SARIMA forecast for pH (lower CI = acid-crash risk) and temperature (upper CI = overheating risk). Use for 'will X happen', 'next 24 hours', 'forecast', 'predict'.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_anomalies",
+            "description": "List recent anomaly events detected by Isolation Forest. Use when the user asks about anomalies, alerts, unusual readings, problems.",
+            "parameters": {
+                "type": "object",
+                "properties": {"limit": {"type": "integer", "description": "Max events to return (1-50). Default 10.", "minimum": 1, "maximum": 50}},
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_status",
+            "description": "Get system mode (ADAPTIVE / COLD_START / MAINTENANCE / STABILIZING), days since install, days until adaptive mode unlocks, maintenance flags. Use for questions about system state, calibration, 'when will AI activate'.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "explain_wqi",
+            "description": "Get the WQI formula, weights, ideal ranges per parameter, severity bands (Excellent/Good/Fair/Poor/Critical), AND the current reading's per-component breakdown. Use for 'why is WQI X', 'how is WQI calculated', 'what does WQI mean'.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+]
+
+
+# ── Dispatcher ───────────────────────────────────────────────────────────────
+
+DISPATCH = {
+    "get_latest_reading": tool_get_latest_reading,
+    "get_history":        tool_get_history,
+    "get_forecast":       tool_get_forecast,
+    "get_anomalies":      tool_get_anomalies,
+    "get_status":         tool_get_status,
+    "explain_wqi":        tool_explain_wqi,
+}
+
+
+async def dispatch(
+    name: str,
+    arguments: dict[str, Any],
+    db: AsyncIOMotorDatabase,
+    pipeline_router,
+) -> Any:
+    """Execute a tool by name. Returns the raw result (will be JSON-serialised by caller)."""
+    fn = DISPATCH.get(name)
+    if fn is None:
+        return {"error": f"Unknown tool: {name}"}
+    try:
+        return await fn(db=db, pipeline_router=pipeline_router, **(arguments or {}))
+    except Exception as exc:
+        return {"error": f"Tool '{name}' failed: {exc}"}
+```
+
+### 3.5 `backend/app/services/ollama_client.py` — full file
+
+```python
+"""
+ollama_client.py — Talks to local Ollama, runs the tool-call loop
+==================================================================
+Ollama exposes an OpenAI-compatible endpoint at /v1/chat/completions.
+We use the non-streaming variant for tool-call rounds (need full message
+to detect tool_calls), then stream only the FINAL assistant message.
+
+The tool-call loop:
+  while round < CHAT_MAX_TOOL_ROUNDS:
+      response = call ollama
+      if response has tool_calls:
+          execute each tool, append results, continue
+      else:
+          stream the final message and return
+"""
+
+from __future__ import annotations
+
+import json
+from typing import Any, AsyncIterator
+
+import httpx
+
+from app.config import settings
+from app.services.chat_tools import TOOL_SCHEMAS, dispatch
+
+
+SYSTEM_PROMPT = """\
+You are AquaGuard's analytics assistant for a smart aquarium monitoring system.
+You help the user understand their aquarium's water quality through natural conversation.
+
+You have access to tools that read live sensor data, history, forecasts, anomalies, and \
+system status. ALWAYS call a tool before answering questions about specific values, \
+trends, or events. Never invent numbers.
+
+Tank species: Neon Tetra (tropical freshwater).
+Sensor parameters: pH, temperature (°C), TDS (ppm), turbidity (NTU).
+WQI is a 0–100 Water Quality Index (higher = better).
+
+Style:
+- Be concise (2-4 sentences for most answers).
+- Use bullet points for multi-parameter answers.
+- When you cite numbers, include units.
+- If a tool returns an error or no data, say so honestly — do not guess.
+- For decision questions ("should I do a water change?"), give a clear recommendation \
+and briefly state the reasons from the tool data.
+"""
+
+
+async def run_chat(
+    messages: list[dict[str, Any]],
+    db,
+    pipeline_router,
+    dashboard_context: dict | None = None,
+) -> AsyncIterator[str]:
+    """
+    Async generator yielding text chunks of the final assistant message.
+    Performs up to CHAT_MAX_TOOL_ROUNDS tool-call iterations first.
+    """
+    # Build the system prompt (optionally enriched with dashboard context)
+    system_msg = {"role": "system", "content": SYSTEM_PROMPT}
+    if dashboard_context:
+        system_msg["content"] += (
+            "\n\nUser's current dashboard context:\n"
+            + json.dumps(dashboard_context, indent=2)
+        )
+
+    convo: list[dict[str, Any]] = [system_msg] + messages
+    url = f"{settings.OLLAMA_URL}/v1/chat/completions"
+
+    async with httpx.AsyncClient(timeout=settings.OLLAMA_TIMEOUT_SEC) as http:
+        for round_idx in range(settings.CHAT_MAX_TOOL_ROUNDS):
+            payload = {
+                "model": settings.OLLAMA_MODEL,
+                "messages": convo,
+                "tools": TOOL_SCHEMAS,
+                "stream": False,
+            }
+            resp = await http.post(url, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+            msg = data["choices"][0]["message"]
+
+            tool_calls = msg.get("tool_calls") or []
+            if not tool_calls:
+                # Final answer — stream it word-by-word for the UI feel
+                content = msg.get("content") or ""
+                async for chunk in _stream_text(content):
+                    yield chunk
+                return
+
+            # Append the assistant tool-call message
+            convo.append({
+                "role":       "assistant",
+                "content":    msg.get("content") or "",
+                "tool_calls": tool_calls,
+            })
+
+            # Execute each tool
+            for call in tool_calls:
+                fn_name = call["function"]["name"]
+                raw_args = call["function"].get("arguments") or "{}"
+                try:
+                    args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                except Exception:
+                    args = {}
+                result = await dispatch(fn_name, args, db, pipeline_router)
+                convo.append({
+                    "role":         "tool",
+                    "tool_call_id": call.get("id", fn_name),
+                    "name":         fn_name,
+                    "content":      json.dumps(result, default=str),
+                })
+
+        # Hit the round cap — ask the model to summarise with whatever it has
+        convo.append({
+            "role": "user",
+            "content": "(System: tool round limit reached — please summarise your findings now without calling more tools.)",
+        })
+        payload = {
+            "model": settings.OLLAMA_MODEL,
+            "messages": convo,
+            "stream": False,
+        }
+        resp = await http.post(url, json=payload)
+        resp.raise_for_status()
+        content = resp.json()["choices"][0]["message"].get("content") or ""
+        async for chunk in _stream_text(content):
+            yield chunk
+
+
+async def _stream_text(text: str, chunk_size: int = 8) -> AsyncIterator[str]:
+    """
+    Lightweight pseudo-streaming — chunks the final text so the UI shows
+    a typewriter effect. Real token streaming with Ollama + tool-calls is
+    fiddly (mid-stream tool detection); this is the pragmatic compromise.
+    """
+    import asyncio
+    for i in range(0, len(text), chunk_size):
+        yield text[i:i + chunk_size]
+        await asyncio.sleep(0.01)
+```
+
+### 3.6 `backend/app/routers/chat.py` — full file
+
+```python
+"""
+routers/chat.py — POST /api/chat (Server-Sent Events)
+======================================================
+Streams the LLM's response back as SSE so the frontend can render
+a typewriter effect.
+
+Request body:
+  {
+    "messages": [{"role":"user","content":"..."}, ...],
+    "dashboard_context": { "page": "/advanced/forecast", ... }   // optional
+  }
+
+Response: text/event-stream
+  data: {"chunk": "Hello"}
+  data: {"chunk": " there"}
+  data: {"done": true}
+"""
+
+from __future__ import annotations
+
+import json
+
+from fastapi import APIRouter, Depends
+from fastapi.responses import StreamingResponse
+from motor.motor_asyncio import AsyncIOMotorDatabase
+
+from app.dependencies import get_db, get_pipeline_router
+from app.models import ChatRequest
+from app.services.ollama_client import run_chat
+
+
+router = APIRouter(tags=["chat"])
+
+
+@router.post("/chat")
+async def chat_endpoint(
+    body: ChatRequest,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    pipeline_router = Depends(get_pipeline_router),
+):
+    async def event_stream():
+        try:
+            async for chunk in run_chat(
+                messages          = [m.model_dump(exclude_none=True) for m in body.messages],
+                db                = db,
+                pipeline_router   = pipeline_router,
+                dashboard_context = body.dashboard_context,
+            ):
+                yield f"data: {json.dumps({'chunk': chunk})}\n\n"
+            yield f"data: {json.dumps({'done': True})}\n\n"
+        except Exception as exc:
+            yield f"data: {json.dumps({'error': str(exc)})}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+```
+
+### 3.7 `backend/app/main.py` — patch
+
+Find the block in `create_app()`:
+
+```python
+    from app.routers import (
+        telemetry as telemetry_router,
+        forecast  as forecast_router,
+        maintenance as maintenance_router,
+        status    as status_router,
+        latest    as latest_router,
+        history   as history_router,
+    )
+```
+
+**Add** `chat as chat_router,` to the import. Then below the existing `application.include_router(...)` calls, **add**:
+
+```python
+    application.include_router(chat_router.router, prefix="/api")
+```
+
+### 3.8 `frontend/src/app/api/types.ts` — append
+
+```typescript
+// ── Chat ────────────────────────────────────────────────────────────────────
+
+export interface ChatMessage {
+  role: 'user' | 'assistant' | 'system' | 'tool';
+  content: string;
+  tool_call_id?: string;
+  name?: string;
+}
+
+export interface ChatRequest {
+  messages: ChatMessage[];
+  dashboard_context?: Record<string, unknown>;
+}
+```
+
+### 3.9 `frontend/src/app/hooks/useChat.ts` — full file
+
+```typescript
+import { useCallback, useRef, useState } from 'react';
+import { ChatMessage } from '../api/types';
+
+const BASE = import.meta.env.VITE_API_URL ?? '';
+
+export interface ChatState {
+  messages: ChatMessage[];
+  isStreaming: boolean;
+  error: string | null;
+}
+
+const SUGGESTIONS = [
+  'What is my current water quality?',
+  'Why is my WQI low?',
+  'Show TDS trend over the past week',
+  'Are there any anomalies recently?',
+  'Will my temperature spike in the next 24 hours?',
+  'Should I do a water change?',
+];
+
+export function useChat() {
+  const [state, setState] = useState<ChatState>({
+    messages: [],
+    isStreaming: false,
+    error: null,
+  });
+  const abortRef = useRef<AbortController | null>(null);
+
+  const send = useCallback(async (text: string, dashboardContext?: Record<string, unknown>) => {
+    const userMsg: ChatMessage = { role: 'user', content: text };
+    const assistantMsg: ChatMessage = { role: 'assistant', content: '' };
+
+    setState(s => ({
+      ...s,
+      messages: [...s.messages, userMsg, assistantMsg],
+      isStreaming: true,
+      error: null,
+    }));
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    try {
+      const res = await fetch(`${BASE}/api/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messages: [...state.messages, userMsg],
+          dashboard_context: dashboardContext,
+        }),
+        signal: controller.signal,
+      });
+
+      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n\n');
+        buffer = lines.pop() ?? '';
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          try {
+            const evt = JSON.parse(line.slice(6));
+            if (evt.chunk) {
+              setState(s => {
+                const msgs = [...s.messages];
+                const last = msgs[msgs.length - 1];
+                msgs[msgs.length - 1] = { ...last, content: last.content + evt.chunk };
+                return { ...s, messages: msgs };
+              });
+            }
+            if (evt.error) throw new Error(evt.error);
+          } catch (err) {
+            // ignore partial JSON
+          }
+        }
+      }
+    } catch (err: any) {
+      if (err.name === 'AbortError') return;
+      setState(s => ({ ...s, error: String(err.message ?? err) }));
+    } finally {
+      setState(s => ({ ...s, isStreaming: false }));
+      abortRef.current = null;
+    }
+  }, [state.messages]);
+
+  const stop = useCallback(() => {
+    abortRef.current?.abort();
+  }, []);
+
+  const reset = useCallback(() => {
+    setState({ messages: [], isStreaming: false, error: null });
+  }, []);
+
+  return { ...state, send, stop, reset, suggestions: SUGGESTIONS };
+}
+```
+
+### 3.10 `frontend/src/app/components/ChatPanel.tsx` — full file
+
+Floating bottom-right widget. Collapsed = round button. Expanded = chat window (~400×600).
+
+```tsx
+import { useState, useEffect, useRef } from 'react';
+import { useLocation } from 'react-router';
+import { MessageCircle, X, Send, Sparkles, Loader2, RotateCcw } from 'lucide-react';
+import { useChat } from '../hooks/useChat';
+
+export function ChatPanel() {
+  const [open, setOpen] = useState(false);
+  const [input, setInput] = useState('');
+  const location = useLocation();
+  const { messages, isStreaming, error, send, reset, suggestions } = useChat();
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll on new content
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
+  }, [messages]);
+
+  const handleSend = (text: string) => {
+    if (!text.trim() || isStreaming) return;
+    send(text.trim(), { page: location.pathname });
+    setInput('');
+  };
+
+  return (
+    <>
+      {/* Floating launcher button */}
+      {!open && (
+        <button
+          onClick={() => setOpen(true)}
+          aria-label="Open AquaGuard assistant"
+          className="fixed bottom-6 right-6 z-50 w-14 h-14 rounded-full shadow-2xl flex items-center justify-center transition-transform hover:scale-105"
+          style={{ background: 'linear-gradient(135deg, #2E75B6, #006B6B)' }}
+        >
+          <MessageCircle className="w-6 h-6 text-white" />
+          <span className="absolute -top-1 -right-1 w-3 h-3 rounded-full bg-emerald-400 border-2 border-white" />
+        </button>
+      )}
+
+      {/* Chat window */}
+      {open && (
+        <div className="fixed bottom-6 right-6 z-50 w-[400px] max-w-[calc(100vw-2rem)] h-[600px] max-h-[calc(100vh-3rem)] rounded-2xl shadow-2xl flex flex-col overflow-hidden bg-white border border-gray-200">
+          {/* Header */}
+          <div className="flex items-center gap-3 px-4 py-3" style={{ background: 'linear-gradient(135deg, #1A3D5C, #2E75B6)' }}>
+            <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: 'rgba(255,255,255,0.15)' }}>
+              <Sparkles className="w-4 h-4 text-white" />
+            </div>
+            <div className="flex-1">
+              <p className="text-sm font-bold text-white">AquaGuard Assistant</p>
+              <p className="text-[10px] text-blue-200">Powered by local Gemma 4 · 8B</p>
+            </div>
+            {messages.length > 0 && (
+              <button onClick={reset} aria-label="Reset conversation" className="text-blue-200 hover:text-white p-1">
+                <RotateCcw className="w-4 h-4" />
+              </button>
+            )}
+            <button onClick={() => setOpen(false)} aria-label="Close" className="text-blue-200 hover:text-white p-1">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+
+          {/* Messages */}
+          <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-4 space-y-3 bg-slate-50">
+            {messages.length === 0 && (
+              <div className="space-y-3">
+                <p className="text-sm text-slate-600">
+                  Hi! I can read your live sensor data, forecasts, and anomalies. Try asking:
+                </p>
+                <div className="space-y-2">
+                  {suggestions.map(q => (
+                    <button
+                      key={q}
+                      onClick={() => handleSend(q)}
+                      className="w-full text-left px-3 py-2 rounded-xl bg-white border border-slate-200 text-sm text-slate-700 hover:border-blue-400 hover:bg-blue-50 transition-colors"
+                    >
+                      {q}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {messages.map((m, i) => (
+              <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                <div
+                  className={`max-w-[85%] px-3.5 py-2.5 rounded-2xl text-sm leading-relaxed whitespace-pre-wrap ${
+                    m.role === 'user'
+                      ? 'bg-blue-500 text-white rounded-br-sm'
+                      : 'bg-white text-slate-800 border border-slate-200 rounded-bl-sm'
+                  }`}
+                >
+                  {m.content || (isStreaming && i === messages.length - 1 ? <Loader2 className="w-4 h-4 animate-spin" /> : '')}
+                </div>
+              </div>
+            ))}
+
+            {error && (
+              <div className="text-xs text-red-600 bg-red-50 border border-red-200 px-3 py-2 rounded-xl">
+                {error}
+              </div>
+            )}
+          </div>
+
+          {/* Input */}
+          <div className="border-t border-slate-200 bg-white p-3">
+            <form
+              onSubmit={(e) => { e.preventDefault(); handleSend(input); }}
+              className="flex items-end gap-2"
+            >
+              <textarea
+                value={input}
+                onChange={e => setInput(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    handleSend(input);
+                  }
+                }}
+                placeholder="Ask about your aquarium..."
+                rows={1}
+                className="flex-1 resize-none rounded-xl border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent"
+                disabled={isStreaming}
+              />
+              <button
+                type="submit"
+                disabled={!input.trim() || isStreaming}
+                className="w-10 h-10 rounded-xl flex items-center justify-center text-white disabled:opacity-40 disabled:cursor-not-allowed"
+                style={{ background: 'linear-gradient(135deg, #2E75B6, #006B6B)' }}
+              >
+                {isStreaming ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+```
+
+### 3.11 `frontend/src/app/App.tsx` — patch
+
+```tsx
+import { RouterProvider } from 'react-router';
+import { router } from './routes';
+import { ChatPanel } from './components/ChatPanel';
+
+function App() {
+  return (
+    <>
+      <RouterProvider router={router} />
+      <ChatPanel />
+    </>
+  );
+}
+
+export default App;
+```
+
+> ⚠️ `ChatPanel` uses `useLocation()` from `react-router`. With `RouterProvider`, hooks only work **inside** the routed tree. If you see a "useLocation outside Router" error, instead mount `<ChatPanel />` inside a layout component (e.g. add it to `AdvancedLayout.tsx` and `SimpleLayout.tsx`) — OR convert `ChatPanel` to read `window.location.pathname` directly. Recommend the latter for simplicity.
+
+**Alternative ChatPanel patch** if the hook error appears — replace the `useLocation` line:
+```tsx
+// import { useLocation } from 'react-router';   ← remove
+// const location = useLocation();               ← remove
+const pagePath = typeof window !== 'undefined' ? window.location.pathname : '/';
+// Then change `{ page: location.pathname }` to `{ page: pagePath }`
+```
+
+---
+
+## 4. Step-by-step build order (for the agent)
+
+Do these in order, running the verification command after each step:
+
+| Step | Action | Verify |
+|---|---|---|
+| 1 | Edit `backend/app/config.py` (add 4 fields) | `python -c "from app.config import settings; print(settings.OLLAMA_MODEL)"` from `backend/` → `gemma4:e4b` |
+| 2 | Edit `backend/.env` (append 3 lines) | re-run step 1 |
+| 3 | Edit `backend/app/models.py` (append `ChatMessage`, `ChatRequest`) | `python -c "from app.models import ChatRequest; print('ok')"` |
+| 4 | Create `backend/app/services/chat_tools.py` | `python -c "from app.services.chat_tools import TOOL_SCHEMAS; print(len(TOOL_SCHEMAS))"` → `6` |
+| 5 | Create `backend/app/services/ollama_client.py` | `python -c "from app.services.ollama_client import run_chat; print('ok')"` |
+| 6 | Create `backend/app/routers/chat.py` | `python -c "from app.routers.chat import router; print('ok')"` |
+| 7 | Edit `backend/app/main.py` (add import + include_router) | start backend; visit `http://localhost:8000/docs` → confirm `POST /api/chat` appears |
+| 8 | End-to-end backend test (curl below) | get streaming response |
+| 9 | Edit `frontend/src/app/api/types.ts` (append types) | `npm run dev` — no TS errors |
+| 10 | Create `frontend/src/app/hooks/useChat.ts` | TS compiles |
+| 11 | Create `frontend/src/app/components/ChatPanel.tsx` | TS compiles |
+| 12 | Edit `frontend/src/app/App.tsx` (mount panel) | refresh — chat button appears bottom-right |
+| 13 | Click button, send "What is my current water quality?" | streaming reply with real numbers |
+
+### Backend curl smoke test (step 8)
+
+```bash
+curl -N -X POST http://localhost:8000/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{"messages":[{"role":"user","content":"What is my current water quality?"}]}'
+```
+
+Expected: a stream of `data: {"chunk":"..."}` lines ending with `data: {"done":true}`. The chunks should mention real WQI / sensor values from your DB.
+
+---
+
+## 5. Acceptance criteria (must all pass before declaring "done")
+
+- [ ] Click chat button → window opens, suggestions visible
+- [ ] Click "What is my current water quality?" → streamed reply contains the actual current WQI from `/api/latest`
+- [ ] Ask "Show TDS trend over the past week" → reply quotes a min/max/mean from `/api/history`
+- [ ] Ask "Should I do a water change?" → reply considers WQI + maintenance state + (optionally) forecast
+- [ ] Ask a non-aquarium question (e.g. "What's the capital of France?") → assistant replies briefly but stays in domain or politely redirects
+- [ ] Backend logs show tool calls (add a `print(f"[CHAT] tool={fn_name} args={args}")` in `ollama_client.py` if helpful)
+- [ ] Closing the chat window preserves no state issues; reopening shows previous conversation
+- [ ] Reset button clears the conversation
+- [ ] Network tab: `/api/chat` returns `text/event-stream`, multiple `data:` events, status 200
+
+---
+
+## 6. Common failure modes & fixes
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `ConnectionError` to localhost:11434 | Ollama not running | `ollama serve` (or check Ollama Desktop is open) |
+| Tool calls return but reply is empty | Gemma generated tool_calls but no content — normal | Code already loops; if persists, lower `CHAT_MAX_TOOL_ROUNDS` to 3 |
+| "useLocation outside Router" error | `ChatPanel` mounted as sibling of `RouterProvider` | Use the alternative `window.location.pathname` patch in §3.11 |
+| Frontend CORS error on /api/chat | CORS_ORIGINS in .env doesn't include the dev origin | Confirm `CORS_ORIGINS=["http://localhost:5173","http://localhost:3000"]` |
+| 422 Unprocessable on POST /api/chat | Pydantic rejecting the body | Check Network tab payload — `messages` must be a list of `{role, content}` objects |
+| Chunks render as one giant blob | EventSource buffering | Confirm response Content-Type is `text/event-stream` (FastAPI `StreamingResponse` does this) |
+| Gemma hallucinates numbers | System prompt not strong enough | Tighten SYSTEM_PROMPT — emphasise "ALWAYS call a tool" |
+| Tool round limit reached often | LLM looping | Increase `CHAT_MAX_TOOL_ROUNDS` to 6 OR shorten tool result payloads |
+
+---
+
+## 7. Definition of Done for this spec
+
+The chatbot integration is done when:
+
+1. All 11 files in §2 exist with content matching §3
+2. All 13 build steps in §4 pass
+3. All acceptance criteria in §5 pass
+4. The backend, frontend, and Ollama all run together via `start-dev.bat` + `ollama serve`
+
+---
+
+## 8. After this spec is implemented — next assignment work
+
+(Not part of this spec — see `ASSIGNMENT_PLAN.md` for the rest.)
+
+- Phase 2: UX documentation (personas, flow diagram, accessibility audit)
+- Phase 3: Polish (onboarding tour, insight cards, deep-linking from chat to dashboard)
+- Phase 4: Technical & UX Evaluation Report (PDF, with mandatory AI Tools Usage Disclosure)
+- Phase 5: 10-min demo script + viva prep
+
+---
+
+## Appendix A — Why this design choices
+
+- **Local Ollama / Gemma 4** vs. cloud API (Claude/GPT): satisfies the AI Tools Usage Disclosure cleanly, no API key in the repo, demo works offline, and shows engineering depth — implementing self-hosted LLM serving is a stronger viva point than pasting an API key.
+- **Tool-calling** vs. RAG: the dataset is highly structured time-series + the dashboard already knows how to summarise it. RAG over CSV chunks would be slower and lower quality. Tools that hit the same endpoints as the dashboard guarantee answer/visual consistency.
+- **In-process tool execution** vs. HTTP loopback: faster and avoids serialization overhead. Tools share the FastAPI app state (db, pipeline_router) via dependency injection rather than re-fetching over HTTP.
+- **SSE streaming** vs. WebSocket: simpler, one-way (server → client) is all chat needs, no extra protocol library on either side.
+- **Pseudo-streaming the final message** vs. true token streaming: Ollama's tool-calling and streaming modes don't compose cleanly (mid-stream tool detection is fragile). Splitting the architecture (non-streaming tool rounds + chunked final message) is robust and the UX feels identical to the user.

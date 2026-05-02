@@ -19,8 +19,9 @@ from pydantic import BaseModel
 
 class TelemetryRequest(BaseModel):
     """Body for POST /api/telemetry (manual/debug endpoint).
-    MQTT messages use the same 4-field JSON payload, parsed in mqtt_client.py."""
-    ph:          float
+    MQTT messages use the same 4-field JSON payload, parsed in mqtt_client.py.
+    pH is optional — when absent (None), the pipeline detects SENSOR_ERROR."""
+    ph:          float | None = None
     temperature: float
     tds:         float
     turbidity:   float
@@ -80,15 +81,16 @@ class StatusResponse(BaseModel):
 
 class LatestResponse(BaseModel):
     """Response for GET /api/latest — most recent telemetry doc with full breakdown."""
-    timestamp:    str
-    ph:           float | None
-    temperature:  float | None
-    tds:          float | None
-    turbidity:    float | None
-    wqi_score:    float | None
-    anomaly_flag: int
-    mode:         str
-    breakdown:    dict
+    timestamp:     str
+    ph:            float | None
+    temperature:   float | None
+    tds:           float | None
+    turbidity:     float | None
+    wqi_score:     float | None
+    anomaly_flag:  int
+    mode:          str
+    breakdown:     dict
+    sensor_errors: list[str] = []
 
 
 # ── Outbound — history ───────────────────────────────────────────────────────
@@ -118,3 +120,19 @@ class AnomalyEvent(BaseModel):
     anomaly_flag: int
     persistence:  int    # number of consecutive anomaly readings in this cluster
     mode:         str | None
+
+
+# ── Chat ────────────────────────────────────────────────────────────────────
+
+class ChatMessage(BaseModel):
+    """One message in the conversation history."""
+    role:         str          # "user" | "assistant" | "system" | "tool"
+    content:      str
+    tool_call_id: str | None = None
+    name:         str | None = None   # tool name, when role == "tool"
+
+
+class ChatRequest(BaseModel):
+    """Body for POST /api/chat."""
+    messages:          list[ChatMessage]
+    dashboard_context: dict | None = None

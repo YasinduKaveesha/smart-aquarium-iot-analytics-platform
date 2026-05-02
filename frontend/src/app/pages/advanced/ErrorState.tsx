@@ -1,5 +1,6 @@
 import { useNavigate } from 'react-router';
 import { AdvancedLayout } from '../../components/AdvancedLayout';
+import { useLatest } from '../../hooks/useLatest';
 import { AlertTriangle, RefreshCw, Home, Wifi, Database, Server } from 'lucide-react';
 
 interface ErrorScenario {
@@ -40,6 +41,9 @@ const errorScenarios: ErrorScenario[] = [
 
 export function ErrorState() {
   const navigate = useNavigate();
+  const { mode: apiMode, sensorErrors } = useLatest();
+  const isSensorError = apiMode === 'SENSOR_ERROR';
+  const phFailed = isSensorError && sensorErrors.some(e => e.toLowerCase().includes('ph'));
 
   return (
     <AdvancedLayout>
@@ -119,12 +123,12 @@ export function ErrorState() {
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           {[
             { name: 'Temperature Sensor', status: 'online', uptime: '99.2%' },
-            { name: 'pH Sensor', status: 'online', uptime: '98.7%' },
-            { name: 'TDS Sensor', status: 'warning', uptime: '94.1%' },
+            { name: 'pH Sensor', status: phFailed ? 'offline' : 'online', uptime: phFailed ? '71.4%' : '98.7%' },
+            { name: 'TDS Sensor', status: 'online', uptime: '94.1%' },
             { name: 'Turbidity Sensor', status: 'online', uptime: '97.8%' },
             { name: 'MQTT Broker', status: 'online', uptime: '99.9%' },
-            { name: 'Time-Series DB', status: 'warning', uptime: '91.3%' },
-            { name: 'Analytics API', status: 'offline', uptime: '82.5%' },
+            { name: 'Time-Series DB', status: 'online', uptime: '99.3%' },
+            { name: 'Analytics API', status: isSensorError ? 'warning' : 'online', uptime: isSensorError ? '85.0%' : '99.5%' },
             { name: 'Web Frontend', status: 'online', uptime: '100%' },
           ].map(({ name, status, uptime }) => {
             const statusColors = {

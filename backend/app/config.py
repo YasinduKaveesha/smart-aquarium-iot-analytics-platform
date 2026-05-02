@@ -38,6 +38,12 @@ class Settings(BaseSettings):
     # JSON list of allowed CORS origins, e.g. '["http://localhost:5173"]'
     CORS_ORIGINS: list[str] = ["http://localhost:5173", "http://localhost:3000"]
 
+    # ── Chatbot (Ollama) ─────────────────────────────────────────────────────
+    OLLAMA_URL:           str = "http://localhost:11434"
+    OLLAMA_MODEL:         str = "gemma4:e4b"
+    OLLAMA_TIMEOUT_SEC:   int = 120
+    CHAT_MAX_TOOL_ROUNDS: int = 4
+
     # ── Computed ─────────────────────────────────────────────────────────────
     # PROJECT_ROOT is resolved at startup: two levels up from this file
     # (backend/app/config.py → backend/ → project root)
